@@ -5,9 +5,17 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-if (ffmpegStatic) {
-  Ffmpeg.setFfmpegPath(ffmpegStatic);
+// ffmpeg-static resolves its path at install time which can be wrong on Vercel
+// (/ROOT/... at build vs /var/task/... at runtime). Fall back to cwd-relative path.
+function resolveFfmpegPath(): string {
+  if (ffmpegStatic && fs.existsSync(ffmpegStatic)) return ffmpegStatic;
+  const bin = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+  const alt = path.join(process.cwd(), 'node_modules', 'ffmpeg-static', bin);
+  if (fs.existsSync(alt)) return alt;
+  throw new Error(`ffmpeg binary not found. Tried: ${ffmpegStatic}, ${alt}`);
 }
+
+Ffmpeg.setFfmpegPath(resolveFfmpegPath());
 
 function sampleEvenly<T>(arr: T[], n: number): T[] {
   if (arr.length <= n) return arr;
