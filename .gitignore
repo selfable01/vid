@@ -1,0 +1,15 @@
+# Node
+webapp/node_modules/
+webapp/.next/
+webapp/.env*
+webapp/.vercel/
+
+# Temp video processing
+temp/
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# macOS
+.DS_Store

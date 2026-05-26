@@ -1,0 +1,555 @@
+{
+  "name": "Video \u2192 Veo 3.1 Regeneration Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "documentId": {
+          "__rl": true,
+          "value": "1wIh6AcVKWvef4NANk_c5a9jRiZ5gxrnBSHKdDB1yfc0",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "id"
+        },
+        "event": "rowAdded",
+        "options": {}
+      },
+      "id": "trigger-sheets",
+      "name": "Trigger: New Sheet Row",
+      "type": "n8n-nodes-base.googleSheetsTrigger",
+      "typeVersion": 1,
+      "position": [240, 320],
+      "onError": "stopWorkflow",
+      "credentials": {
+        "googleSheetsTriggerOAuth2Api": {
+          "id": "QMVQS07gdB5Lmx0f",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code Node: Fetch Video Data\n// Extracts video title and transcript/caption from YouTube or Instagram Reel URLs\nconst results = [];\nfor (const item of $input.all()) {\n  const sourceUrl = item.json.source_url;\n\n  // Detect source type\n  let sourceType = '';\n  if (sourceUrl.includes('youtube.com') || sourceUrl.includes('youtu.be')) {\n    sourceType = 'youtube';\n  } else if (sourceUrl.includes('instagram.com/reel') || sourceUrl.includes('instagram.com/p/')) {\n    sourceType = 'instagram';\n  }\n\n  if (!sourceType) {\n    results.push({\n      json: {\n        source_url: sourceUrl,\n        source_type: 'unknown',\n        video_id: '',\n        title: 'ERROR: Unsupported URL. Use a YouTube or Instagram Reel link.',\n        transcript: '',\n        thumbnail_url: '',\n        thumbnail_base64: '',\n        aspect_ratio: '16:9',\n      },\n    });\n    continue;\n  }\n\n  // ===== YOUTUBE =====\n  if (sourceType === 'youtube') {\n    let videoId = '';\n    if (sourceUrl.includes('v=')) {\n      videoId = sourceUrl.split('v=')[1].split('&')[0];\n    } else if (sourceUrl.includes('youtu.be/')) {\n      videoId = sourceUrl.split('youtu.be/')[1].split('?')[0];\n    } else if (sourceUrl.includes('/shorts/')) {\n      videoId = sourceUrl.split('/shorts/')[1].split('?')[0];\n    }\n\n    if (!videoId) {\n      results.push({\n        json: {\n          source_url: sourceUrl,\n          source_type: 'youtube',\n          video_id: '',\n          title: 'ERROR: Invalid YouTube URL',\n          transcript: '',\n          thumbnail_url: '',\n          thumbnail_base64: '',\n          aspect_ratio: '16:9',\n        },\n      });\n      continue;\n    }\n\n    // Get title via oEmbed\n    let title = '';\n    try {\n      const oembedResp = await this.helpers.httpRequest({\n        method: 'GET',\n        url: 'https://www.youtube.com/oembed?format=json&url=https://www.youtube.com/watch?v=' + videoId,\n      });\n      const oembedData = typeof oembedResp === 'string' ? JSON.parse(oembedResp) : oembedResp;\n      title = oembedData.title || '';\n    } catch (e) {\n      title = 'Untitled Video';\n    }\n\n    // Fetch YouTube page to find captions\n    let transcript = '';\n    try {\n      const page = await this.helpers.httpRequest({\n        method: 'GET',\n        url: 'https://www.youtube.com/watch?v=' + videoId,\n        headers: {\n          'Accept-Language': 'en-US,en;q=0.9',\n          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',\n        },\n      });\n      const pageStr = typeof page === 'string' ? page : JSON.stringify(page);\n\n      const captionRegex = /\\\"captionTracks\\\":\\[\\{\\\"baseUrl\\\":\\\"([^\\\"]+)\\\"/;\n      const captionMatch = pageStr.match(captionRegex);\n\n      if (captionMatch && captionMatch[1]) {\n        const captionUrl = captionMatch[1].replace(/\\\\u0026/g, '&');\n        const capsResp = await this.helpers.httpRequest({\n          method: 'GET',\n          url: captionUrl + '&fmt=json3',\n        });\n        const capsData = typeof capsResp === 'string' ? JSON.parse(capsResp) : capsResp;\n        const events = capsData.events || [];\n\n        transcript = events\n          .filter(function(ev) { return ev.segs; })\n          .map(function(ev) { return ev.segs.map(function(s) { return s.utf8; }).join(''); })\n          .join(' ')\n          .replace(/\\s+/g, ' ')\n          .trim();\n      }\n\n      if (!transcript) {\n        const descRegex = /\\\"shortDescription\\\":\\\"((?:[^\\\"\\\\]|\\\\.)*)\\\"/;\n        const descMatch = pageStr.match(descRegex);\n        if (descMatch && descMatch[1]) {\n          transcript = descMatch[1].replace(/\\\\n/g, ' ').replace(/\\\\\\\"/g, '\"').trim();\n        }\n      }\n\n      if (!transcript) {\n        transcript = 'No transcript or description available. Analyze based on the title only.';\n      }\n    } catch (e) {\n      transcript = 'Could not fetch transcript. Analyze based on the title only.';\n    }\n\n    // Fetch thumbnail as base64\n    let thumbBase64 = '';\n    let thumbUrl = 'https://img.youtube.com/vi/' + videoId + '/maxresdefault.jpg';\n    try {\n      const thumbResp = await this.helpers.httpRequest({ method: 'GET', url: thumbUrl, encoding: 'arraybuffer', returnFullResponse: true });\n      thumbBase64 = Buffer.from(thumbResp.body).toString('base64');\n    } catch (e) {\n      try {\n        thumbUrl = 'https://img.youtube.com/vi/' + videoId + '/hqdefault.jpg';\n        const thumbResp2 = await this.helpers.httpRequest({ method: 'GET', url: thumbUrl, encoding: 'arraybuffer', returnFullResponse: true });\n        thumbBase64 = Buffer.from(thumbResp2.body).toString('base64');\n      } catch (e2) { thumbBase64 = ''; }\n    }\n\n    results.push({\n      json: {\n        source_url: sourceUrl,\n        source_type: 'youtube',\n        video_id: videoId,\n        title: title,\n        transcript: transcript,\n        thumbnail_url: thumbUrl,\n        thumbnail_base64: thumbBase64,\n        aspect_ratio: '16:9',\n      },\n    });\n  }\n\n  // ===== INSTAGRAM =====\n  if (sourceType === 'instagram') {\n    let shortcode = '';\n    const reelMatch = sourceUrl.match(/instagram\\.com\\/(?:reel|reels|p)\\/([A-Za-z0-9_-]+)/);\n    if (reelMatch && reelMatch[1]) {\n      shortcode = reelMatch[1];\n    }\n\n    if (!shortcode) {\n      results.push({\n        json: {\n          source_url: sourceUrl,\n          source_type: 'instagram',\n          video_id: '',\n          title: 'ERROR: Invalid Instagram URL',\n          transcript: '',\n          thumbnail_url: '',\n          thumbnail_base64: '',\n          aspect_ratio: '9:16',\n        },\n      });\n      continue;\n    }\n\n    let title = '';\n    let thumbUrl = '';\n    let thumbBase64 = '';\n    let transcript = '';\n\n    // Try Instagram oEmbed API (works for public posts, no auth needed)\n    try {\n      const oembedResp = await this.helpers.httpRequest({\n        method: 'GET',\n        url: 'https://api.instagram.com/oembed/?url=' + encodeURIComponent(sourceUrl) + '&format=json',\n        headers: {\n          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',\n        },\n      });\n      const oembedData = typeof oembedResp === 'string' ? JSON.parse(oembedResp) : oembedResp;\n      title = oembedData.title || '';\n      thumbUrl = oembedData.thumbnail_url || '';\n      const authorName = oembedData.author_name || '';\n      if (!title && authorName) {\n        title = 'Instagram Reel by ' + authorName;\n      }\n    } catch (e) {\n      // oEmbed failed, try page scraping fallback\n    }\n\n    // Fallback: scrape the page for og: meta tags\n    if (!title || !thumbUrl) {\n      try {\n        const page = await this.helpers.httpRequest({\n          method: 'GET',\n          url: sourceUrl,\n          headers: {\n            'Accept-Language': 'en-US,en;q=0.9',\n            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',\n          },\n        });\n        const pageStr = typeof page === 'string' ? page : JSON.stringify(page);\n\n        if (!title) {\n          const ogTitleMatch = pageStr.match(/property=\\\"og:title\\\"\\s+content=\\\"([^\\\"]+)\\\"/);\n          if (ogTitleMatch && ogTitleMatch[1]) {\n            title = ogTitleMatch[1].replace(/&amp;/g, '&').replace(/&#39;/g, \"'\").replace(/&quot;/g, '\"');\n          }\n        }\n\n        if (!thumbUrl) {\n          const ogImageMatch = pageStr.match(/property=\\\"og:image\\\"\\s+content=\\\"([^\\\"]+)\\\"/);\n          if (ogImageMatch && ogImageMatch[1]) {\n            thumbUrl = ogImageMatch[1].replace(/&amp;/g, '&');\n          }\n        }\n\n        if (!title) {\n          const descMatch = pageStr.match(/property=\\\"og:description\\\"\\s+content=\\\"([^\\\"]+)\\\"/);\n          if (descMatch && descMatch[1]) {\n            title = descMatch[1].replace(/&amp;/g, '&').replace(/&#39;/g, \"'\").replace(/&quot;/g, '\"');\n          }\n        }\n      } catch (e) {\n        // Page scraping also failed\n      }\n    }\n\n    if (!title) {\n      title = 'Instagram Reel ' + shortcode;\n    }\n\n    transcript = title || 'No caption available. Analyze based on the thumbnail only.';\n\n    // Fetch thumbnail as base64\n    if (thumbUrl) {\n      try {\n        const thumbResp = await this.helpers.httpRequest({\n          method: 'GET',\n          url: thumbUrl,\n          encoding: 'arraybuffer',\n          returnFullResponse: true,\n          headers: {\n            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',\n          },\n        });\n        thumbBase64 = Buffer.from(thumbResp.body).toString('base64');\n      } catch (e) {\n        thumbBase64 = '';\n      }\n    }\n\n    results.push({\n      json: {\n        source_url: sourceUrl,\n        source_type: 'instagram',\n        video_id: shortcode,\n        title: title,\n        transcript: transcript,\n        thumbnail_url: thumbUrl,\n        thumbnail_base64: thumbBase64,\n        aspect_ratio: '9:16',\n      },\n    });\n  }\n}\nreturn results;"
+      },
+      "id": "node-fetch-video",
+      "name": "Fetch Video Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 320]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=AIzaSyBZ9MrKDfaZW31rC9SBpza2qnVw_dsIjTU",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"inlineData\": {\n            \"mimeType\": \"image/jpeg\",\n            \"data\": \"{{ $json.thumbnail_base64 }}\"\n          }\n        },\n        {\n          \"text\": \"Title: {{ $json.title }}\\n\\nTranscript / Summary:\\n{{ $json.transcript }}\\n\\nAnalyze the THUMBNAIL IMAGE above along with the title/transcript. Describe exactly what you SEE in the image \u2014 the people, their appearance, age, clothing, expressions, actions, and surroundings. Produce the cinematographic analysis as instructed.\"\n        }\n      ]\n    }\n  ],\n  \"systemInstruction\": {\n    \"parts\": [\n      {\n        \"text\": \"You are a senior cinematographer and visual analyst. You are given a video thumbnail image plus its title and transcript. PRIORITIZE what you see in the image over what the transcript says. Describe the actual visible subjects (people, animals, objects), their appearance, and actions. Output ONLY a structured JSON object with these keys:\\n\\n{\\n  \\\"subject\\\": \\\"primary subject(s) and their actions\\\",\\n  \\\"setting\\\": \\\"location, time of day, weather, atmosphere\\\",\\n  \\\"composition\\\": \\\"framing, shot types (wide/medium/close), camera angles\\\",\\n  \\\"camera_movement\\\": \\\"static, handheld, dolly, crane, gimbal, drone \u2014 be specific\\\",\\n  \\\"lighting\\\": \\\"key/fill/rim, color temperature, contrast ratio, hard vs soft\\\",\\n  \\\"color_palette\\\": \\\"dominant hues, grading style (teal-orange, desaturated, etc.)\\\",\\n  \\\"texture_and_materials\\\": \\\"surface details \u2014 fabric weave, water reflections, skin pores, etc.\\\",\\n  \\\"motion\\\": \\\"speed and direction of movement in frame\\\",\\n  \\\"mood\\\": \\\"emotional register the visuals convey\\\",\\n  \\\"reference_style\\\": \\\"comparable director, DP, or film stock if applicable\\\"\\n}\\n\\nNo prose outside the JSON. No markdown fences. Be concrete and visual \u2014 avoid generic adjectives like 'beautiful' or 'amazing'.\"\n      }\n    ]\n  },\n  \"generationConfig\": {\n    \"temperature\": 0.4\n  }\n}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "node-analysis",
+      "name": "Gemini: Cinematography Analysis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 320]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=AIzaSyBZ9MrKDfaZW31rC9SBpza2qnVw_dsIjTU",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Cinematographic analysis JSON:\\n{{ $json.candidates?.[0]?.content?.parts?.[0]?.text }}\\n\\nReturn ONLY the final Veo prompt string. No JSON wrapper, no preamble.\"\n        }\n      ]\n    }\n  ],\n  \"systemInstruction\": {\n    \"parts\": [\n      {\n        \"text\": \"You are a Google Veo 3.1 prompt engineer. You receive a JSON cinematography analysis and produce a single dense prompt optimized for Google's Veo video generation model.\\n\\nRules:\\n1) ALWAYS lead with the HUMAN SUBJECT if people are described \u2014 their appearance, age, ethnicity, clothing, facial expressions, and actions. Example: \\\"An elderly couple in their 70s, weathered hands intertwined, walk slowly along a cobblestone path\u2026\\\"\\n2) Layer SETTING, then SHOT/CAMERA MOVEMENT (\\\"slow dolly-in\\\", \\\"handheld tracking\\\", \\\"low-angle wide\\\"), then LIGHTING (specific: \\\"low golden-hour sidelight, long shadows, warm 3200K key\\\"), then TEXTURE (\\\"saltwater spray on skin, frayed rope fibers, scratched lens flare\\\").\\n3) For videos about people: use medium or close-up shots, describe facial expressions, skin details, clothing fabric, body language.\\n4) End with technical anchors: \\\"photorealistic, 4K resolution, cinematic color grade, shallow depth of field, 24fps, natural film grain\\\".\\n5) Use vivid sensory verbs for motion (\\\"shuffles\\\", \\\"caresses\\\", \\\"gazes\\\", \\\"leans\\\", \\\"whispers\\\").\\n6) Hard limits: 75-150 words. Single paragraph. No bullet lists.\\n7) Never include negative phrasing (\\\"no people\\\", \\\"without\\\"). Veo interprets negatives poorly \u2014 describe only what should be present.\\n8) Veo excels at photorealistic human subjects, natural skin tones, emotional close-ups, and natural lighting \u2014 lean into these strengths.\\n\\nReturn the prompt only. Plain text. No quotes around it.\"\n      }\n    ]\n  },\n  \"generationConfig\": {\n    \"temperature\": 0.7\n  }\n}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "node-prompt-engineer",
+      "name": "Gemini: Veo Prompt Engineer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 320]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "p1",
+              "name": "veo_prompt",
+              "value": "={{ $json.candidates?.[0]?.content?.parts?.[0]?.text }}",
+              "type": "string"
+            },
+            {
+              "id": "p2",
+              "name": "aspect_ratio",
+              "value": "={{ $('Fetch Video Data').item.json.aspect_ratio }}",
+              "type": "string"
+            },
+            {
+              "id": "p3",
+              "name": "source_type",
+              "value": "={{ $('Fetch Video Data').item.json.source_type }}",
+              "type": "string"
+            }
+          ],
+          "includeOtherFields": true
+        }
+      },
+      "id": "node-merge-prompt",
+      "name": "Carry Prompt Forward",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1120, 320]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/veo-3.0-generate-preview:predictLongRunning?key=AIzaSyBZ9MrKDfaZW31rC9SBpza2qnVw_dsIjTU",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"instances\": [\n    {\n      \"prompt\": {{ JSON.stringify($json.veo_prompt) }}\n    }\n  ],\n  \"parameters\": {\n    \"aspectRatio\": \"{{ $json.aspect_ratio }}\",\n    \"sampleCount\": 1,\n    \"durationSeconds\": 8,\n    \"personGeneration\": \"allow_adult\"\n  }\n}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "node-create-video",
+      "name": "POST Veo Generate (Submit Job)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 320]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "op1",
+              "name": "operation_name",
+              "value": "={{ $json.name }}",
+              "type": "string"
+            }
+          ],
+          "includeOtherFields": true
+        }
+      },
+      "id": "node-capture-operation",
+      "name": "Capture Operation Name",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1560, 320]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "pc0",
+              "name": "poll_count",
+              "value": 0,
+              "type": "number"
+            }
+          ],
+          "includeOtherFields": true
+        }
+      },
+      "id": "node-init-poll",
+      "name": "Initialize Poll Count",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1700, 320]
+    },
+    {
+      "parameters": {
+        "amount": 30,
+        "unit": "seconds"
+      },
+      "id": "node-wait",
+      "name": "Wait 30s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1880, 320],
+      "webhookId": "auto"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/{{ $('Capture Operation Name').item.json.operation_name }}?key=AIzaSyBZ9MrKDfaZW31rC9SBpza2qnVw_dsIjTU",
+        "authentication": "none",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "node-poll-status",
+      "name": "GET Operation Status (Poll)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2000, 320]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.done }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-if-done",
+      "name": "Operation Done?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2220, 320]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "pc1",
+              "name": "poll_count",
+              "value": "={{ ($json.poll_count || 0) + 1 }}",
+              "type": "number"
+            }
+          ],
+          "includeOtherFields": true
+        }
+      },
+      "id": "node-increment-poll",
+      "name": "Increment Poll Count",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [2440, 480]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c3",
+              "leftValue": "={{ $json.poll_count }}",
+              "rightValue": 40,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-max-retries",
+      "name": "Max Retries?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2660, 480]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c2",
+              "leftValue": "={{ $json.error }}",
+              "rightValue": "",
+              "operator": {
+                "type": "object",
+                "operation": "exists"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-if-failed",
+      "name": "Has Error?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2440, 220]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1wIh6AcVKWvef4NANk_c5a9jRiZ5gxrnBSHKdDB1yfc0",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "id"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "source_url": "={{ $('Fetch Video Data').item.json.source_url }}",
+            "video_title": "={{ $('Fetch Video Data').item.json.title }}",
+            "transcript": "={{ $('Fetch Video Data').item.json.transcript }}",
+            "veo_prompt": "={{ $('Carry Prompt Forward').item.json.veo_prompt }}",
+            "video_url": "={{ $json.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri || $json.response?.generatedSamples?.[0]?.video?.uri || '' }}",
+            "status": "completed",
+            "completed_at": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": ["source_url"]
+        },
+        "options": {}
+      },
+      "id": "node-update-success",
+      "name": "Sheet: Update Success",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [2880, 120],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "QMVQS07gdB5Lmx0f",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1wIh6AcVKWvef4NANk_c5a9jRiZ5gxrnBSHKdDB1yfc0",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "id"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "source_url": "={{ $('Fetch Video Data').item.json.source_url }}",
+            "video_title": "={{ $('Fetch Video Data').item.json.title }}",
+            "transcript": "={{ $('Fetch Video Data').item.json.transcript }}",
+            "veo_prompt": "={{ $('Carry Prompt Forward').item.json.veo_prompt }}",
+            "status": "failed",
+            "error": "={{ $json.error?.message || $json.error?.code || 'Unknown Veo error' }}"
+          },
+          "matchingColumns": ["source_url"]
+        },
+        "options": {}
+      },
+      "id": "node-update-failed",
+      "name": "Sheet: Update Failure",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [2880, 320],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "QMVQS07gdB5Lmx0f",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1wIh6AcVKWvef4NANk_c5a9jRiZ5gxrnBSHKdDB1yfc0",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "id"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "source_url": "={{ $('Fetch Video Data').item.json.source_url }}",
+            "status": "failed",
+            "error": "Timed out after 40 poll attempts (~20 minutes)"
+          },
+          "matchingColumns": ["source_url"]
+        },
+        "options": {}
+      },
+      "id": "node-update-timeout",
+      "name": "Sheet: Update Timeout",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [2880, 560],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "QMVQS07gdB5Lmx0f",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Trigger: New Sheet Row": {
+      "main": [[{ "node": "Fetch Video Data", "type": "main", "index": 0 }]]
+    },
+    "Fetch Video Data": {
+      "main": [[{ "node": "Gemini: Cinematography Analysis", "type": "main", "index": 0 }]]
+    },
+    "Gemini: Cinematography Analysis": {
+      "main": [[{ "node": "Gemini: Veo Prompt Engineer", "type": "main", "index": 0 }]]
+    },
+    "Gemini: Veo Prompt Engineer": {
+      "main": [[{ "node": "Carry Prompt Forward", "type": "main", "index": 0 }]]
+    },
+    "Carry Prompt Forward": {
+      "main": [[{ "node": "POST Veo Generate (Submit Job)", "type": "main", "index": 0 }]]
+    },
+    "POST Veo Generate (Submit Job)": {
+      "main": [[{ "node": "Capture Operation Name", "type": "main", "index": 0 }]]
+    },
+    "Capture Operation Name": {
+      "main": [[{ "node": "Initialize Poll Count", "type": "main", "index": 0 }]]
+    },
+    "Initialize Poll Count": {
+      "main": [[{ "node": "Wait 30s", "type": "main", "index": 0 }]]
+    },
+    "Wait 30s": {
+      "main": [[{ "node": "GET Operation Status (Poll)", "type": "main", "index": 0 }]]
+    },
+    "GET Operation Status (Poll)": {
+      "main": [[{ "node": "Operation Done?", "type": "main", "index": 0 }]]
+    },
+    "Operation Done?": {
+      "main": [
+        [{ "node": "Has Error?", "type": "main", "index": 0 }],
+        [{ "node": "Increment Poll Count", "type": "main", "index": 0 }]
+      ]
+    },
+    "Increment Poll Count": {
+      "main": [[{ "node": "Max Retries?", "type": "main", "index": 0 }]]
+    },
+    "Max Retries?": {
+      "main": [
+        [{ "node": "Sheet: Update Timeout", "type": "main", "index": 0 }],
+        [{ "node": "Wait 30s", "type": "main", "index": 0 }]
+      ]
+    },
+    "Has Error?": {
+      "main": [
+        [{ "node": "Sheet: Update Failure", "type": "main", "index": 0 }],
+        [{ "node": "Sheet: Update Success", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "executionTimeout": 1800
+  },
+  "versionId": "2.0.0",
+  "meta": {
+    "instanceId": "video-to-veo-pipeline"
+  },
+  "pinData": {},
+  "tags": [
+    { "name": "video-pipeline" },
+    { "name": "veo" },
+    { "name": "instagram" }
+  ]
+}

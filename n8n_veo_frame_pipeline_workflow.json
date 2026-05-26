@@ -1,0 +1,515 @@
+{
+  "name": "Video → Veo 3.1 Frame-Accurate 45s Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": { "item": [{ "mode": "everyMinute" }] },
+        "documentId": { "__rl": true, "value": "1wIh6AcVKWvef4NANk_c5a9jRiZ5gxrnBSHKdDB1yfc0", "mode": "id" },
+        "sheetName": { "__rl": true, "value": "gid=0", "mode": "id" },
+        "event": "rowAdded",
+        "options": {}
+      },
+      "id": "trigger-sheets",
+      "name": "Trigger: New Sheet Row",
+      "type": "n8n-nodes-base.googleSheetsTrigger",
+      "typeVersion": 1,
+      "position": [0, 300],
+      "credentials": {
+        "googleSheetsTriggerOAuth2Api": { "id": "QMVQS07gdB5Lmx0f", "name": "Google Sheets account" }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const results = [];\nfor (const item of $input.all()) {\n  const sourceUrl = item.json.source_url;\n  let sourceType = '';\n  let videoId = '';\n  let aspectRatio = '16:9';\n\n  if (sourceUrl.includes('youtube.com') || sourceUrl.includes('youtu.be')) {\n    sourceType = 'youtube';\n    if (sourceUrl.includes('v=')) videoId = sourceUrl.split('v=')[1].split('&')[0];\n    else if (sourceUrl.includes('youtu.be/')) videoId = sourceUrl.split('youtu.be/')[1].split('?')[0];\n    else if (sourceUrl.includes('/shorts/')) videoId = sourceUrl.split('/shorts/')[1].split('?')[0];\n  } else if (sourceUrl.includes('instagram.com')) {\n    sourceType = 'instagram';\n    aspectRatio = '9:16';\n    const m = sourceUrl.match(/instagram\\.com\\/(?:reel|reels|p)\\/([A-Za-z0-9_-]+)/);\n    if (m) videoId = m[1];\n  }\n\n  if (!videoId || !sourceType) {\n    results.push({ json: { source_url: sourceUrl, source_type: 'unknown', video_id: '', title: 'ERROR: Unsupported URL', aspect_ratio: '16:9' } });\n    continue;\n  }\n\n  // Sanitize video_id for use in file paths\n  const safeId = videoId.replace(/[^A-Za-z0-9_-]/g, '_');\n\n  let title = safeId;\n  try {\n    if (sourceType === 'youtube') {\n      const r = await this.helpers.httpRequest({ method: 'GET', url: 'https://www.youtube.com/oembed?format=json&url=https://www.youtube.com/watch?v=' + videoId });\n      const data = typeof r === 'string' ? JSON.parse(r) : r;\n      title = data.title || safeId;\n    }\n  } catch(e) { title = safeId; }\n\n  results.push({ json: { source_url: sourceUrl, source_type: sourceType, video_id: safeId, title, aspect_ratio: aspectRatio } });\n}\nreturn results;"
+      },
+      "id": "node-fetch-video",
+      "name": "Fetch Video Metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const FFMPEG = 'C:\\\\Users\\\\user\\\\AppData\\\\Local\\\\Microsoft\\\\WinGet\\\\Packages\\\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\\\ffmpeg-8.1.1-full_build\\\\bin\\\\ffmpeg.exe';\nconst TEMP = 'C:\\\\Users\\\\user\\\\Desktop\\\\AI\\\\vid-generator\\\\temp';\nconst item = $input.first().json;\nconst videoId = item.video_id;\nconst sourceUrl = item.source_url;\n\n// Use video_id as output filename so we know exactly where the file is\nconst ytdlpCmd = `yt-dlp -o \"${TEMP}\\\\${videoId}.%(ext)s\" --merge-output-format mp4 --no-playlist \"${sourceUrl}\"`;\nconst ffmpegCmd = `\"${FFMPEG}\" -i \"${TEMP}\\\\${videoId}.mp4\" -vf \"fps=1,scale=640:-1\" -q:v 3 -vframes 30 \"${TEMP}\\\\${videoId}_frame_%03d.jpg\" -y`;\nconst mkdirCmd = `cmd /c if not exist \"${TEMP}\" mkdir \"${TEMP}\" && echo created`;\n\nreturn [{ json: {\n  source_url: item.source_url,\n  source_type: item.source_type,\n  video_id: videoId,\n  title: item.title,\n  aspect_ratio: item.aspect_ratio,\n  ytdlp_cmd: ytdlpCmd,\n  ffmpeg_cmd: ffmpegCmd,\n  mkdir_cmd: mkdirCmd,\n  temp_dir: TEMP,\n  ffmpeg_path: FFMPEG\n} }];"
+      },
+      "id": "node-build-commands",
+      "name": "Build Commands",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "command": "={{ $('Build Commands').item.json.mkdir_cmd }}"
+      },
+      "id": "node-exec-mkdir",
+      "name": "Execute: Create Temp Dir",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [750, 300]
+    },
+    {
+      "parameters": {
+        "command": "={{ $('Build Commands').item.json.ytdlp_cmd }}"
+      },
+      "id": "node-exec-ytdlp",
+      "name": "Execute: yt-dlp Download",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1000, 300]
+    },
+    {
+      "parameters": {
+        "command": "={{ $('Build Commands').item.json.ffmpeg_cmd }}"
+      },
+      "id": "node-exec-ffmpeg",
+      "name": "Execute: ffmpeg Extract Frames",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst cmdData = $('Build Commands').first().json;\nconst videoId = cmdData.video_id;\nconst tempDir = cmdData.temp_dir;\nconst prefix = videoId + '_frame_';\n\nlet frames = [];\ntry {\n  const files = fs.readdirSync(tempDir)\n    .filter(f => f.startsWith(prefix) && f.endsWith('.jpg'))\n    .sort();\n\n  // Sample evenly — up to 15 frames to keep Gemini token cost low\n  const maxFrames = 15;\n  let selected;\n  if (files.length <= maxFrames) {\n    selected = files;\n  } else {\n    selected = [];\n    const step = (files.length - 1) / (maxFrames - 1);\n    for (let i = 0; i < maxFrames; i++) {\n      selected.push(files[Math.round(i * step)]);\n    }\n  }\n\n  frames = selected.map(f => {\n    const buf = fs.readFileSync(path.join(tempDir, f));\n    return buf.toString('base64');\n  });\n} catch(e) {\n  frames = [];\n}\n\nreturn [{ json: {\n  source_url: cmdData.source_url,\n  source_type: cmdData.source_type,\n  video_id: videoId,\n  title: cmdData.title,\n  aspect_ratio: cmdData.aspect_ratio,\n  frame_images: frames,\n  frame_count: frames.length,\n  temp_dir: tempDir\n} }];"
+      },
+      "id": "node-load-frames",
+      "name": "Load Frame Images",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1500, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const item = $input.first().json;\nconst frames = item.frame_images || [];\nconst title = item.title || '';\nconst aspectRatio = item.aspect_ratio || '16:9';\n\nconst parts = [];\n\n// Add each frame as inlineData\nframes.forEach(frameBase64 => {\n  if (frameBase64) {\n    parts.push({ inlineData: { mimeType: 'image/jpeg', data: frameBase64 } });\n  }\n});\n\nconst frameNote = frames.length > 0\n  ? `These are ${frames.length} frames extracted at 1 frame per second from the actual video, showing the complete visual content.`\n  : 'No video frames available — analyze based on title only.';\n\nparts.push({\n  text: `Title: ${title}\\nAspect Ratio: ${aspectRatio}\\n\\n${frameNote}\\n\\nAnalyze ALL provided frames to understand the complete video: scene progression, character actions, camera movements, visual style, color grading, and narrative arc. Produce the cinematographic analysis as instructed.`\n});\n\nconst systemText = `You are an expert cinematographer and visual analyst. You receive multiple video frames (1 frame per second) showing the actual video content. Analyze ALL frames carefully to understand the complete video.\\n\\nOutput ONLY a valid JSON object, no markdown fences, no prose:\\n{\\n  \"subject\": \"primary subject(s), their appearance (age, clothing, hair color, ethnicity as visible), and evolving actions across all frames\",\\n  \"setting\": \"exact location, time of day, background elements, atmosphere\",\\n  \"composition\": \"shot types used (wide/medium/close-up/extreme-close), angles, framing\",\\n  \"camera_movement\": \"specific movements: static/pan/tilt/dolly/handheld/tracking — be precise\",\\n  \"lighting\": \"key light direction, color temperature in Kelvin, shadow quality, practical vs artificial\",\\n  \"color_palette\": \"dominant hues with approximate hex codes, grading style (teal-orange, desaturated, warm, etc.)\",\\n  \"texture_and_materials\": \"fabric, skin, surfaces, reflections — tactile details visible in frames\",\\n  \"scene_progression\": \"how the action evolves from first to last frame, key transitions and beats\",\\n  \"key_moments\": [\"moment 1\", \"moment 2\", \"moment 3\", \"moment 4\", \"moment 5\"],\\n  \"mood\": \"emotional register and energy level the visuals convey\",\\n  \"recommended_segments\": 4\\n}\\n\\nSet recommended_segments to 4 (four 8-second Veo clips = ~32 seconds of video). Be concrete about what you SEE in the frames.`;\n\nconst body = {\n  contents: [{ role: 'user', parts: parts }],\n  systemInstruction: { parts: [{ text: systemText }] },\n  generationConfig: { temperature: 0.3 }\n};\n\nreturn [{ json: {\n  source_url: item.source_url,\n  source_type: item.source_type,\n  video_id: item.video_id,\n  title: title,\n  aspect_ratio: aspectRatio,\n  frame_count: frames.length,\n  gemini_body: JSON.stringify(body)\n} }];"
+      },
+      "id": "node-build-analysis",
+      "name": "Build Analysis Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1750, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=AIzaSyAWWc4W-ZYeL6DF-8ZT6wXGPjh44vnO9SQ",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": { "parameters": [{ "name": "Content-Type", "value": "application/json" }] },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.gemini_body }}",
+        "options": {
+          "response": { "response": { "fullResponse": false, "responseFormat": "json" } },
+          "timeout": 120000
+        }
+      },
+      "id": "node-gemini-analysis",
+      "name": "Gemini: Frame Analysis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2000, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const srcData = $('Build Analysis Request').first().json;\nconst response = $input.first().json;\n\nlet text = response.candidates?.[0]?.content?.parts?.[0]?.text || '{}';\ntext = text.replace(/[\\x00-\\x1F\\x7F]/g, ' ');\n\nlet analysis;\ntry {\n  analysis = JSON.parse(text);\n} catch(e) {\n  const m = text.match(/\\{[\\s\\S]*\\}/);\n  try { analysis = m ? JSON.parse(m[0]) : {}; } catch(e2) { analysis = {}; }\n}\n\nconst targetSegments = Math.max(4, Math.min(4, parseInt(analysis.recommended_segments) || 4));\nconst targetExtensions = targetSegments - 1;\n\nconst systemText = `You are an expert video prompt engineer for Google Veo 3.1. You have received a detailed cinematographic analysis of a reference video. Create exactly 4 prompts to recreate this video as a ~32-second generation (4 clips × 8 seconds each).\\n\\nINITIAL PROMPT (covers opening 8 seconds):\\n- 150-250 words, single paragraph\\n- Include: exact subject description (age, clothing, hair, expression), setting details, opening action, shot type and camera angle, lighting with color temperature, color palette with hex codes, texture details\\n\\nEXTENSION PROMPTS (3 prompts, each covers next 8 seconds):\\n- 100-180 words each, single paragraph\\n- Continue seamlessly from previous — same characters, same setting, same color palette\\n- Describe progression of action, camera movement shifts, emotional development\\n- Each must feel like a natural continuation\\n\\nRULES:\\n1. ALL prompts share the same visual universe — consistent appearance, colors, lighting\\n2. Focus on CORE ACTION: what the subject is actively DOING\\n3. Use strong motion verbs: glides, reaches, turns, tilts, steps, applies, presses\\n4. End EVERY prompt with: photorealistic, 4K resolution, cinematic lighting, 24fps, shallow depth of field\\n5. NEVER include dialogue, voiceover, narration, sound descriptions — Veo generates audio automatically\\n6. Never use negative phrasing (no X, without X)\\n7. Output ONLY valid JSON, no markdown fences:\\n{\\n  \"video_description\": \"2-3 sentence summary\",\\n  \"core_action\": \"the main action being performed\",\\n  \"initial_prompt\": \"detailed opening 8-second prompt...\",\\n  \"extension_prompts\": [\"extension 1\", \"extension 2\", \"extension 3\"]\\n}`;\n\nconst userText = `Create 4 Veo 3.1 prompts based on this cinematographic analysis of the reference video:\\n\\n${JSON.stringify(analysis, null, 2)}\\n\\nTitle: ${srcData.title}\\nAspect Ratio: ${srcData.aspect_ratio}\\nFrames analyzed: ${srcData.frame_count}\\n\\nGenerate exactly 4 prompts (1 initial + 3 extensions) for a ~32-second video that faithfully recreates the reference.`;\n\nconst body = {\n  contents: [{ role: 'user', parts: [{ text: userText }] }],\n  systemInstruction: { parts: [{ text: systemText }] },\n  generationConfig: { temperature: 0.3 }\n};\n\nreturn [{ json: {\n  source_url: srcData.source_url,\n  source_type: srcData.source_type,\n  video_id: srcData.video_id,\n  title: srcData.title,\n  aspect_ratio: srcData.aspect_ratio,\n  frame_count: srcData.frame_count,\n  cinematography: analysis,\n  target_segments: targetSegments,\n  target_extensions: targetExtensions,\n  target_duration: targetSegments * 8,\n  gemini_body: JSON.stringify(body)\n} }];"
+      },
+      "id": "node-build-prompts",
+      "name": "Build Prompts Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2250, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=AIzaSyAWWc4W-ZYeL6DF-8ZT6wXGPjh44vnO9SQ",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": { "parameters": [{ "name": "Content-Type", "value": "application/json" }] },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.gemini_body }}",
+        "options": {
+          "response": { "response": { "fullResponse": false, "responseFormat": "json" } },
+          "timeout": 120000
+        }
+      },
+      "id": "node-gemini-prompts",
+      "name": "Gemini: Generate Veo Prompts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2500, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const srcData = $('Build Prompts Request').first().json;\nconst response = $input.first().json;\n\nlet text = response.candidates?.[0]?.content?.parts?.[0]?.text || '{}';\ntext = text.replace(/[\\x00-\\x1F\\x7F]/g, ' ');\n\nlet parsed;\ntry {\n  parsed = JSON.parse(text);\n} catch(e) {\n  const m = text.match(/\\{[\\s\\S]*\\}/);\n  try { parsed = m ? JSON.parse(m[0]) : {}; } catch(e2) { parsed = {}; }\n}\n\nconst initialPrompt = parsed.initial_prompt || 'A cinematic scene, photorealistic, 4K resolution, cinematic lighting, 24fps, shallow depth of field';\nconst extensionPrompts = parsed.extension_prompts || [];\nconst targetExt = srcData.target_extensions || 3;\n\n// Pad extensions if Gemini returned fewer than requested\nwhile (extensionPrompts.length < targetExt) {\n  extensionPrompts.push(extensionPrompts[extensionPrompts.length - 1] || initialPrompt);\n}\n\nconst allPrompts = [initialPrompt, ...extensionPrompts.slice(0, targetExt)];\n\nreturn [{ json: {\n  source_url: srcData.source_url,\n  title: srcData.title,\n  aspect_ratio: srcData.aspect_ratio,\n  source_type: srcData.source_type,\n  all_prompts: JSON.stringify(allPrompts),\n  current_extension: 0,\n  target_extensions: targetExt,\n  video_base64: '',\n  all_video_uris: '[]',\n  video_description: parsed.video_description || '',\n  poll_count: 0\n} }];"
+      },
+      "id": "node-prepare-state",
+      "name": "Prepare Veo State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2750, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const item = $input.first().json;\nconst currentExt = Number(item.current_extension) || 0;\nconst allPrompts = JSON.parse(item.all_prompts || '[]');\nconst prompt = allPrompts[currentExt] || 'A cinematic scene, photorealistic, 4K resolution, cinematic lighting, 24fps';\nconst aspectRatio = item.aspect_ratio || '16:9';\nconst videoBase64 = item.video_base64 || '';\n\n// Use previous video for extension continuity (video-to-video mode)\nconst instances = [];\nconst instance = { prompt };\nif (videoBase64 && currentExt > 0) {\n  instance.video = { bytesBase64Encoded: videoBase64 };\n}\ninstances.push(instance);\n\nconst requestBody = {\n  instances,\n  parameters: {\n    aspectRatio,\n    resolution: '720p',\n    personGeneration: 'allow_all'\n  }\n};\n\nreturn [{ json: {\n  source_url: item.source_url || '',\n  title: item.title || '',\n  aspect_ratio: aspectRatio,\n  source_type: item.source_type || 'youtube',\n  all_prompts: item.all_prompts || '[]',\n  current_extension: currentExt,\n  target_extensions: item.target_extensions || 3,\n  video_base64: '',\n  all_video_uris: item.all_video_uris || '[]',\n  video_description: item.video_description || '',\n  veo_request_body: JSON.stringify(requestBody),\n  current_prompt: prompt,\n  poll_count: 0\n} }];"
+      },
+      "id": "node-build-veo-request",
+      "name": "Build Veo Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3000, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-generate-preview:predictLongRunning",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": { "parameters": [
+          { "name": "Content-Type", "value": "application/json" },
+          { "name": "x-goog-api-key", "value": "AIzaSyAWWc4W-ZYeL6DF-8ZT6wXGPjh44vnO9SQ" }
+        ]},
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.veo_request_body }}",
+        "options": {
+          "response": { "response": { "fullResponse": true, "neverError": true, "responseFormat": "json" } },
+          "timeout": 120000
+        }
+      },
+      "id": "node-post-veo",
+      "name": "POST Veo Generate",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3250, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const postResp = $input.first().json;\nconst buildData = $('Build Veo Request').first().json;\nconst opName = postResp.body?.name || postResp.name || '';\nif (!opName) {\n  throw new Error('Veo API error: ' + JSON.stringify(postResp.body || postResp).substring(0, 800));\n}\nreturn [{ json: {\n  operation_name: opName,\n  source_url: buildData.source_url || '',\n  title: buildData.title || '',\n  aspect_ratio: buildData.aspect_ratio || '16:9',\n  source_type: buildData.source_type || 'youtube',\n  all_prompts: buildData.all_prompts || '[]',\n  current_extension: buildData.current_extension || 0,\n  target_extensions: buildData.target_extensions || 5,\n  all_video_uris: buildData.all_video_uris || '[]',\n  video_description: buildData.video_description || '',\n  current_prompt: buildData.current_prompt || '',\n  poll_count: 0\n} }];"
+      },
+      "id": "node-capture-op",
+      "name": "Capture Operation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3500, 300]
+    },
+    {
+      "parameters": {
+        "amount": 15,
+        "unit": "seconds"
+      },
+      "id": "node-wait-15s",
+      "name": "Wait 15s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [3750, 300],
+      "webhookId": "auto"
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            { "id": "pc", "name": "poll_count", "value": "={{ ($json.poll_count || 0) + 1 }}", "type": "number" },
+            { "id": "op", "name": "operation_name", "value": "={{ $('Capture Operation').item.json.operation_name }}", "type": "string" },
+            { "id": "su", "name": "source_url", "value": "={{ $('Capture Operation').item.json.source_url }}", "type": "string" },
+            { "id": "ti", "name": "title", "value": "={{ $('Capture Operation').item.json.title }}", "type": "string" },
+            { "id": "ar", "name": "aspect_ratio", "value": "={{ $('Capture Operation').item.json.aspect_ratio }}", "type": "string" },
+            { "id": "st", "name": "source_type", "value": "={{ $('Capture Operation').item.json.source_type }}", "type": "string" },
+            { "id": "ap", "name": "all_prompts", "value": "={{ $('Capture Operation').item.json.all_prompts }}", "type": "string" },
+            { "id": "ce", "name": "current_extension", "value": "={{ $('Capture Operation').item.json.current_extension }}", "type": "number" },
+            { "id": "te", "name": "target_extensions", "value": "={{ $('Capture Operation').item.json.target_extensions }}", "type": "number" },
+            { "id": "au", "name": "all_video_uris", "value": "={{ $('Capture Operation').item.json.all_video_uris }}", "type": "string" },
+            { "id": "vd", "name": "video_description", "value": "={{ $('Capture Operation').item.json.video_description }}", "type": "string" },
+            { "id": "cp", "name": "current_prompt", "value": "={{ $('Capture Operation').item.json.current_prompt }}", "type": "string" }
+          ]
+        },
+        "includeOtherFields": false
+      },
+      "id": "node-track-poll",
+      "name": "Track Poll Count",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [4000, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
+          "conditions": [{ "id": "c1", "leftValue": "={{ $json.poll_count }}", "rightValue": 30, "operator": { "type": "number", "operation": "gte" } }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-max-retries",
+      "name": "Max Retries (30)?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [4250, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://generativelanguage.googleapis.com/v1beta/' + $json.operation_name }}",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": { "parameters": [{ "name": "x-goog-api-key", "value": "AIzaSyAWWc4W-ZYeL6DF-8ZT6wXGPjh44vnO9SQ" }] },
+        "options": {
+          "response": { "response": { "neverError": true, "responseFormat": "json" } },
+          "timeout": 30000
+        }
+      },
+      "id": "node-get-veo-status",
+      "name": "GET Veo Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4500, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
+          "conditions": [{ "id": "c2", "leftValue": "={{ $json.done }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-done-check",
+      "name": "Generation Done?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [4750, 400]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const item = $input.first().json;\nconst capturedData = $('Track Poll Count').first().json;\nconst apiKey = 'AIzaSyAWWc4W-ZYeL6DF-8ZT6wXGPjh44vnO9SQ';\n\nif (item.error) {\n  return [{ json: {\n    source_url: capturedData.source_url || '',\n    title: capturedData.title || '',\n    needs_extension: false,\n    final_video_url: '',\n    all_video_uris: capturedData.all_video_uris || '[]',\n    error: item.error.message || JSON.stringify(item.error),\n    status: 'failed',\n    video_description: capturedData.video_description || '',\n    current_prompt: capturedData.current_prompt || ''\n  } }];\n}\n\nconst samples = item.response?.generateVideoResponse?.generatedSamples || [];\nconst videoUri = samples[0]?.video?.uri || '';\n\nif (!videoUri) {\n  return [{ json: {\n    source_url: capturedData.source_url || '',\n    title: capturedData.title || '',\n    needs_extension: false,\n    final_video_url: '',\n    all_video_uris: capturedData.all_video_uris || '[]',\n    error: 'No video URI in response: ' + JSON.stringify(item).substring(0, 500),\n    status: 'failed',\n    video_description: capturedData.video_description || '',\n    current_prompt: capturedData.current_prompt || ''\n  } }];\n}\n\nconst currentExt = capturedData.current_extension || 0;\nconst targetExt = capturedData.target_extensions || 5;\nconst existingUris = JSON.parse(capturedData.all_video_uris || '[]');\nexistingUris.push(videoUri);\n\nconst needsMore = currentExt < targetExt;\n\nif (needsMore) {\n  // Download the clip so we can use it as reference for video-to-video extension\n  const videoResp = await this.helpers.httpRequest({\n    method: 'GET',\n    url: videoUri,\n    encoding: 'arraybuffer',\n    returnFullResponse: true,\n    headers: { 'x-goog-api-key': apiKey }\n  });\n  const videoBase64 = Buffer.from(videoResp.body).toString('base64');\n\n  return [{ json: {\n    source_url: capturedData.source_url || '',\n    title: capturedData.title || '',\n    aspect_ratio: capturedData.aspect_ratio || '16:9',\n    source_type: capturedData.source_type || 'youtube',\n    all_prompts: capturedData.all_prompts || '[]',\n    current_extension: currentExt + 1,\n    target_extensions: targetExt,\n    video_base64: videoBase64,\n    all_video_uris: JSON.stringify(existingUris),\n    video_description: capturedData.video_description || '',\n    needs_extension: true,\n    final_video_url: videoUri,\n    error: '',\n    status: 'extending_' + (currentExt + 1) + '_of_' + targetExt,\n    poll_count: 0\n  } }];\n} else {\n  return [{ json: {\n    source_url: capturedData.source_url || '',\n    title: capturedData.title || '',\n    needs_extension: false,\n    final_video_url: videoUri,\n    all_video_uris: JSON.stringify(existingUris),\n    error: '',\n    status: 'completed',\n    video_description: capturedData.video_description || '',\n    current_prompt: capturedData.current_prompt || ''\n  } }];\n}"
+      },
+      "id": "node-process-result",
+      "name": "Process & Check Extension",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5000, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
+          "conditions": [{ "id": "c3", "leftValue": "={{ $json.needs_extension }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-need-more",
+      "name": "Need More Extensions?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [5250, 400]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const d = $input.first().json;\nconst allUris = JSON.parse(d.all_video_uris || '[]');\nconst totalSeconds = allUris.length * 8;\nreturn [{ json: {\n  source_url: String(d.source_url || ''),\n  video_title: String(d.title || ''),\n  transcript: '',\n  veo_prompt: String(d.current_prompt || d.video_description || ''),\n  video_url: String(allUris.join(' | ') || ''),\n  status: String(d.error ? 'failed' : 'completed_' + allUris.length + '_clips_' + totalSeconds + 's'),\n  error: String(d.error || ''),\n  completed_at: new Date().toISOString(),\n  storyboard: String(d.video_description || '')\n} }];"
+      },
+      "id": "node-prepare-final",
+      "name": "Prepare Final Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5500, 600]
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "appendOrUpdate",
+        "documentId": { "__rl": true, "mode": "id", "value": "1wIh6AcVKWvef4NANk_c5a9jRiZ5gxrnBSHKdDB1yfc0" },
+        "sheetName": { "__rl": true, "mode": "id", "value": "gid=0" },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": ["source_url"],
+          "schema": [
+            { "id": "source_url", "displayName": "source_url", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true, "removed": false },
+            { "id": "video_title", "displayName": "video_title", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true },
+            { "id": "transcript", "displayName": "transcript", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true },
+            { "id": "veo_prompt", "displayName": "veo_prompt", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true },
+            { "id": "video_url", "displayName": "video_url", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true },
+            { "id": "status", "displayName": "status", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true },
+            { "id": "error", "displayName": "error", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true },
+            { "id": "completed_at", "displayName": "completed_at", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true },
+            { "id": "storyboard", "displayName": "storyboard", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "node-sheet-result",
+      "name": "Sheet: Update Result",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [5750, 600],
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "QMVQS07gdB5Lmx0f", "name": "Google Sheets account" }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const d = $('Track Poll Count').first().json;\nconst allUris = JSON.parse(d.all_video_uris || '[]');\nreturn [{ json: {\n  source_url: String(d.source_url || ''),\n  video_title: String(d.title || ''),\n  transcript: '',\n  veo_prompt: String(d.current_prompt || ''),\n  video_url: allUris.length > 0 ? allUris.join(' | ') : '',\n  status: 'timeout_ext_' + (d.current_extension || 0) + '_of_' + (d.target_extensions || 3),\n  error: 'Timeout after 30 polls (~7.5 min). Partial: ' + allUris.length + ' clips.',\n  completed_at: new Date().toISOString(),\n  storyboard: ''\n} }];"
+      },
+      "id": "node-prepare-timeout",
+      "name": "Prepare Timeout Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4500, 100]
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "appendOrUpdate",
+        "documentId": { "__rl": true, "mode": "id", "value": "1wIh6AcVKWvef4NANk_c5a9jRiZ5gxrnBSHKdDB1yfc0" },
+        "sheetName": { "__rl": true, "mode": "id", "value": "gid=0" },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": ["source_url"],
+          "schema": [
+            { "id": "source_url", "displayName": "source_url", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true, "removed": false },
+            { "id": "video_title", "displayName": "video_title", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true },
+            { "id": "veo_prompt", "displayName": "veo_prompt", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true },
+            { "id": "video_url", "displayName": "video_url", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true },
+            { "id": "status", "displayName": "status", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true },
+            { "id": "error", "displayName": "error", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true },
+            { "id": "completed_at", "displayName": "completed_at", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "node-sheet-timeout",
+      "name": "Sheet: Update Timeout",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [4750, 100],
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "QMVQS07gdB5Lmx0f", "name": "Google Sheets account" }
+      }
+    }
+  ],
+  "connections": {
+    "Trigger: New Sheet Row": {
+      "main": [[{ "node": "Fetch Video Metadata", "type": "main", "index": 0 }]]
+    },
+    "Fetch Video Metadata": {
+      "main": [[{ "node": "Build Commands", "type": "main", "index": 0 }]]
+    },
+    "Build Commands": {
+      "main": [[{ "node": "Execute: Create Temp Dir", "type": "main", "index": 0 }]]
+    },
+    "Execute: Create Temp Dir": {
+      "main": [[{ "node": "Execute: yt-dlp Download", "type": "main", "index": 0 }]]
+    },
+    "Execute: yt-dlp Download": {
+      "main": [[{ "node": "Execute: ffmpeg Extract Frames", "type": "main", "index": 0 }]]
+    },
+    "Execute: ffmpeg Extract Frames": {
+      "main": [[{ "node": "Load Frame Images", "type": "main", "index": 0 }]]
+    },
+    "Load Frame Images": {
+      "main": [[{ "node": "Build Analysis Request", "type": "main", "index": 0 }]]
+    },
+    "Build Analysis Request": {
+      "main": [[{ "node": "Gemini: Frame Analysis", "type": "main", "index": 0 }]]
+    },
+    "Gemini: Frame Analysis": {
+      "main": [[{ "node": "Build Prompts Request", "type": "main", "index": 0 }]]
+    },
+    "Build Prompts Request": {
+      "main": [[{ "node": "Gemini: Generate Veo Prompts", "type": "main", "index": 0 }]]
+    },
+    "Gemini: Generate Veo Prompts": {
+      "main": [[{ "node": "Prepare Veo State", "type": "main", "index": 0 }]]
+    },
+    "Prepare Veo State": {
+      "main": [[{ "node": "Build Veo Request", "type": "main", "index": 0 }]]
+    },
+    "Build Veo Request": {
+      "main": [[{ "node": "POST Veo Generate", "type": "main", "index": 0 }]]
+    },
+    "POST Veo Generate": {
+      "main": [[{ "node": "Capture Operation", "type": "main", "index": 0 }]]
+    },
+    "Capture Operation": {
+      "main": [[{ "node": "Wait 15s", "type": "main", "index": 0 }]]
+    },
+    "Wait 15s": {
+      "main": [[{ "node": "Track Poll Count", "type": "main", "index": 0 }]]
+    },
+    "Track Poll Count": {
+      "main": [[{ "node": "Max Retries (30)?", "type": "main", "index": 0 }]]
+    },
+    "Max Retries (30)?": {
+      "main": [
+        [{ "node": "Prepare Timeout Result", "type": "main", "index": 0 }],
+        [{ "node": "GET Veo Status", "type": "main", "index": 0 }]
+      ]
+    },
+    "Prepare Timeout Result": {
+      "main": [[{ "node": "Sheet: Update Timeout", "type": "main", "index": 0 }]]
+    },
+    "GET Veo Status": {
+      "main": [[{ "node": "Generation Done?", "type": "main", "index": 0 }]]
+    },
+    "Generation Done?": {
+      "main": [
+        [{ "node": "Process & Check Extension", "type": "main", "index": 0 }],
+        [{ "node": "Wait 15s", "type": "main", "index": 0 }]
+      ]
+    },
+    "Process & Check Extension": {
+      "main": [[{ "node": "Need More Extensions?", "type": "main", "index": 0 }]]
+    },
+    "Need More Extensions?": {
+      "main": [
+        [{ "node": "Build Veo Request", "type": "main", "index": 0 }],
+        [{ "node": "Prepare Final Result", "type": "main", "index": 0 }]
+      ]
+    },
+    "Prepare Final Result": {
+      "main": [[{ "node": "Sheet: Update Result", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "executionTimeout": 3600
+  },
+  "versionId": "3.0.0",
+  "meta": {
+    "instanceId": "video-to-veo-frame-pipeline"
+  },
+  "pinData": {},
+  "tags": [
+    { "name": "video-pipeline" },
+    { "name": "veo" },
+    { "name": "frame-analysis" },
+    { "name": "45s" }
+  ]
+}

@@ -1,0 +1,213 @@
+{
+  "name": "Reels/YouTube → Sora 4-Segment Video Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [{ "mode": "everyMinute" }]
+        },
+        "documentId": { "__rl": true, "value": "1wIh6AcVKWvef4NANk_c5a9jRiZ5gxrnBSHKdDB1yfc0", "mode": "id" },
+        "sheetName": { "__rl": true, "value": "gid=0", "mode": "id" },
+        "event": "rowAdded",
+        "options": {}
+      },
+      "id": "trigger-sheets",
+      "name": "Trigger: New Video Link",
+      "type": "n8n-nodes-base.googleSheetsTrigger",
+      "typeVersion": 1,
+      "position": [240, 320],
+      "credentials": {
+        "googleSheetsTriggerOAuth2Api": { "id": "QMVQS07gdB5Lmx0f", "name": "Google Sheets account" }
+      }
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const results = [];\nfor (const item of $input.all()) {\n  const url = item.json.source_url;\n  let sourceType = '';\n  if (url.includes('youtube.com') || url.includes('youtu.be')) sourceType = 'youtube';\n  else if (url.includes('instagram.com/reel') || url.includes('instagram.com/p/')) sourceType = 'instagram';\n\n  if (!sourceType) {\n    results.push({ json: { source_url: url, source_type: 'unknown', video_id: '', title: 'ERROR: Unsupported URL', transcript: '', duration_seconds: 0, aspect_ratio: '16:9', video_stream_url: '' } });\n    continue;\n  }\n\n  if (sourceType === 'youtube') {\n    let vid = '';\n    if (url.includes('v=')) vid = url.split('v=')[1].split('&')[0];\n    else if (url.includes('youtu.be/')) vid = url.split('youtu.be/')[1].split('?')[0];\n    else if (url.includes('/shorts/')) vid = url.split('/shorts/')[1].split('?')[0];\n    if (!vid) { results.push({ json: { source_url: url, source_type: 'youtube', video_id: '', title: 'ERROR: Invalid YouTube URL', transcript: '', duration_seconds: 0, aspect_ratio: '16:9', video_stream_url: '' } }); continue; }\n\n    let title = '';\n    try {\n      const r = await this.helpers.httpRequest({ method: 'GET', url: 'https://www.youtube.com/oembed?format=json&url=https://www.youtube.com/watch?v=' + vid });\n      title = (typeof r === 'string' ? JSON.parse(r) : r).title || '';\n    } catch (e) { title = 'Untitled Video'; }\n\n    let transcript = ''; let duration_seconds = 0; let videoStreamUrl = '';\n    try {\n      const playerResp = await this.helpers.httpRequest({ method: 'POST', url: 'https://www.youtube.com/youtubei/v1/player?prettyPrint=false', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ videoId: vid, context: { client: { clientName: 'ANDROID', clientVersion: '19.09.37', hl: 'en' } } }) });\n      const pd = typeof playerResp === 'string' ? JSON.parse(playerResp) : playerResp;\n      duration_seconds = parseInt(pd?.videoDetails?.lengthSeconds || '0', 10);\n\n      // Get video stream URL (360p MP4 preferred for small size)\n      const formats = pd?.streamingData?.formats || [];\n      const f360 = formats.find(f => f.itag === 18);\n      const fAny = formats.find(f => f.mimeType && f.mimeType.includes('video/mp4') && f.url);\n      const chosen = f360 || fAny;\n      if (chosen && chosen.url) {\n        videoStreamUrl = chosen.url;\n      }\n\n      // Get transcript\n      const tracks = pd?.captions?.playerCaptionsTracklistRenderer?.captionTracks;\n      if (tracks && tracks.length > 0) {\n        const t = tracks.find(t => t.languageCode === 'en') || tracks[0];\n        const caps = await this.helpers.httpRequest({ method: 'GET', url: t.baseUrl + '&fmt=json3' });\n        const cd = typeof caps === 'string' ? JSON.parse(caps) : caps;\n        transcript = (cd.events || []).filter(e => e.segs).map(e => e.segs.map(s => s.utf8).join('')).join(' ').replace(/\\s+/g, ' ').trim();\n      }\n      if (!transcript) { const desc = pd?.videoDetails?.shortDescription; if (desc && desc.length > 10) transcript = desc; }\n      if (!transcript) transcript = 'No transcript available.';\n    } catch (e) { transcript = 'Fetch error: ' + e.message; }\n\n    results.push({ json: { source_url: url, source_type: 'youtube', video_id: vid, title, transcript, duration_seconds, aspect_ratio: url.includes('/shorts/') ? '9:16' : '16:9', video_stream_url: videoStreamUrl } });\n  }\n\n  if (sourceType === 'instagram') {\n    const reelMatch = url.match(/instagram\\.com\\/(?:reel|reels|p)\\/([A-Za-z0-9_-]+)/);\n    const shortcode = reelMatch ? reelMatch[1] : '';\n    if (!shortcode) { results.push({ json: { source_url: url, source_type: 'instagram', video_id: '', title: 'ERROR: Invalid Instagram URL', transcript: '', duration_seconds: 0, aspect_ratio: '9:16', video_stream_url: '' } }); continue; }\n    let title = '';\n    try {\n      const r = await this.helpers.httpRequest({ method: 'GET', url: 'https://api.instagram.com/oembed/?url=' + encodeURIComponent(url) + '&format=json', headers: { 'User-Agent': 'Mozilla/5.0' } });\n      const d = typeof r === 'string' ? JSON.parse(r) : r;\n      title = d.title || (d.author_name ? 'Instagram Reel by ' + d.author_name : '');\n    } catch (e) {}\n    if (!title) title = 'Instagram Reel ' + shortcode;\n    results.push({ json: { source_url: url, source_type: 'instagram', video_id: shortcode, title, transcript: title, duration_seconds: 0, aspect_ratio: '9:16', video_stream_url: '' } });\n  }\n}\nreturn results;"
+      },
+      "id": "node-fetch-video",
+      "name": "Fetch Video Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 320]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const GEMINI_KEY = 'YOUR_GEMINI_API_KEY';\nconst item = $input.first().json;\n\ntry {\n  let fileUri = '';\n  let usedVideo = false;\n\n  // STEP 1: Try to download and upload actual video to Gemini File API\n  if (item.video_stream_url) {\n    try {\n      // Download the video (360p MP4, usually 5-20MB)\n      const videoResp = await this.helpers.httpRequest({\n        method: 'GET',\n        url: item.video_stream_url,\n        encoding: 'arraybuffer',\n        returnFullResponse: true,\n        timeout: 60000,\n        headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36' }\n      });\n\n      const videoBuffer = Buffer.from(videoResp.body);\n      const videoSizeMB = videoBuffer.length / (1024 * 1024);\n\n      if (videoSizeMB > 0.1 && videoSizeMB < 50) {\n        // Upload to Gemini File API using resumable upload\n        // Step A: Initiate resumable upload\n        const initResp = await this.helpers.httpRequest({\n          method: 'POST',\n          url: 'https://generativelanguage.googleapis.com/upload/v1beta/files?key=' + GEMINI_KEY,\n          headers: {\n            'X-Goog-Upload-Protocol': 'resumable',\n            'X-Goog-Upload-Command': 'start',\n            'X-Goog-Upload-Header-Content-Length': videoBuffer.length.toString(),\n            'X-Goog-Upload-Header-Content-Type': 'video/mp4',\n            'Content-Type': 'application/json'\n          },\n          body: JSON.stringify({ file: { displayName: 'source_video.mp4' } }),\n          returnFullResponse: true\n        });\n\n        const uploadUrl = initResp.headers['x-goog-upload-url'];\n        if (!uploadUrl) throw new Error('No upload URL returned from Gemini File API');\n\n        // Step B: Upload the actual video bytes\n        const uploadResp = await this.helpers.httpRequest({\n          method: 'POST',\n          url: uploadUrl,\n          headers: {\n            'Content-Length': videoBuffer.length.toString(),\n            'X-Goog-Upload-Offset': '0',\n            'X-Goog-Upload-Command': 'upload, finalize'\n          },\n          body: videoBuffer,\n          returnFullResponse: true,\n          timeout: 120000\n        });\n\n        const fileInfo = typeof uploadResp.body === 'string' ? JSON.parse(uploadResp.body) : uploadResp.body;\n        let fileName = fileInfo?.file?.name;\n        fileUri = fileInfo?.file?.uri || '';\n        let fileState = fileInfo?.file?.state || 'PROCESSING';\n\n        // Step C: Poll until file is ACTIVE (Gemini needs to process the video)\n        let pollCount = 0;\n        while (fileState === 'PROCESSING' && pollCount < 30) {\n          await new Promise(r => setTimeout(r, 5000));\n          pollCount++;\n          const statusResp = await this.helpers.httpRequest({\n            method: 'GET',\n            url: 'https://generativelanguage.googleapis.com/v1beta/' + fileName + '?key=' + GEMINI_KEY\n          });\n          const statusData = typeof statusResp === 'string' ? JSON.parse(statusResp) : statusResp;\n          fileState = statusData.state;\n          fileUri = statusData.uri || fileUri;\n        }\n\n        if (fileState === 'ACTIVE' && fileUri) {\n          usedVideo = true;\n        } else {\n          fileUri = '';\n        }\n      }\n    } catch (videoErr) {\n      // Video download/upload failed, will fall back to text-only\n      fileUri = '';\n    }\n  }\n\n  // STEP 2: Build Gemini request - with video file or text-only\n  const parts = [];\n\n  if (usedVideo && fileUri) {\n    // Send the actual video file to Gemini\n    parts.push({\n      fileData: {\n        mimeType: 'video/mp4',\n        fileUri: fileUri\n      }\n    });\n    parts.push({\n      text: 'WATCH THE ENTIRE VIDEO ABOVE carefully. Analyze EVERY scene, shot, and moment.\\n\\nVideo Title: ' + (item.title || '') + '\\nVideo Duration: ' + (item.duration_seconds || 0) + ' seconds\\n\\nTranscript/Description:\\n' + (item.transcript || '').substring(0, 3000) + '\\n\\nProvide a DETAILED scene-by-scene breakdown of this video. For EACH distinct scene or shot, describe:\\n\\n1. TIMESTAMP: When does this scene appear (approximate seconds)\\n2. PEOPLE: Exact appearance - age, gender, ethnicity, hair, clothing, accessories, expressions, body language\\n3. ACTIONS: What are they doing? Specific movements, gestures, interactions\\n4. SETTING: Location, indoor/outdoor, background details, props\\n5. CAMERA: Shot type (close-up/medium/wide), angle, movement (static/pan/dolly/handheld)\\n6. LIGHTING: Natural/artificial, direction, color temperature, shadows\\n7. COLORS: Dominant colors, color grading style, saturation\\n8. MOOD: Emotional tone of this specific scene\\n\\nReturn ONLY valid JSON:\\n{\\n  \"scene_count\": 5,\\n  \"scenes\": [\\n    {\\n      \"timestamp\": \"0-5s\",\\n      \"people\": \"detailed description\",\\n      \"actions\": \"what happens\",\\n      \"setting\": \"where\",\\n      \"camera\": \"shot details\",\\n      \"lighting\": \"light details\",\\n      \"colors\": \"color details\",\\n      \"mood\": \"emotional tone\"\\n    }\\n  ],\\n  \"overall_style\": \"complete visual style summary\",\\n  \"consistent_elements\": \"elements that stay the same throughout (character look, color grade, etc)\",\\n  \"video_narrative\": \"what story or message does the video tell from start to finish\"\\n}'\n    });\n  } else {\n    // Fallback: text-only analysis (no video available)\n    parts.push({\n      text: 'Video Title: ' + (item.title || '') + '\\nVideo Duration: ' + (item.duration_seconds || 0) + ' seconds\\nAspect Ratio: ' + (item.aspect_ratio || '16:9') + '\\n\\nFull Transcript/Description:\\n' + (item.transcript || '') + '\\n\\nBased on this transcript, analyze what this video likely shows. Describe in detail:\\n1. What people/subjects appear and what they look like\\n2. What actions and movements happen\\n3. The setting and environment\\n4. The likely visual style, colors, and lighting\\n5. The mood and energy\\n\\nReturn ONLY valid JSON:\\n{\\n  \"scene_count\": 4,\\n  \"scenes\": [{\"timestamp\":\"0-15s\",\"people\":\"desc\",\"actions\":\"desc\",\"setting\":\"desc\",\"camera\":\"desc\",\"lighting\":\"desc\",\"colors\":\"desc\",\"mood\":\"desc\"}],\\n  \"overall_style\": \"visual style summary\",\\n  \"consistent_elements\": \"recurring elements\",\\n  \"video_narrative\": \"story from start to finish\"\\n}'\n    });\n  }\n\n  const body = {\n    contents: [{ role: 'user', parts: parts }],\n    systemInstruction: {\n      parts: [{ text: 'You are a professional video analyst. ' + (usedVideo ? 'You are watching an actual video. Describe EXACTLY what you see in each scene - specific details about people, clothing, environment, camera work, colors, and lighting. Be extremely precise.' : 'Based on the transcript, infer the likely visual content.') + ' Your scene-by-scene analysis will be used to recreate this video, so every detail matters. Output ONLY valid JSON, no markdown fences.' }]\n    },\n    generationConfig: { temperature: 0.2 }\n  };\n\n  const response = await this.helpers.httpRequest({\n    method: 'POST',\n    url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + GEMINI_KEY,\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify(body),\n    timeout: 120000\n  });\n\n  const resp = typeof response === 'string' ? JSON.parse(response) : response;\n\n  if (resp.error) throw new Error('Gemini API error: ' + JSON.stringify(resp.error));\n  if (resp.candidates?.[0]?.finishReason === 'SAFETY') throw new Error('Gemini SAFETY filter blocked this video');\n\n  let analysisText = resp.candidates?.[0]?.content?.parts?.[0]?.text || '';\n  if (!analysisText) throw new Error('Empty Gemini response: ' + JSON.stringify(resp).substring(0, 300));\n\n  analysisText = analysisText.replace(/[\\x00-\\x1F\\x7F]/g, ' ');\n\n  let analysis;\n  try { analysis = JSON.parse(analysisText); } catch (e) {\n    const m = analysisText.match(/\\{[\\s\\S]*\\}/);\n    try { analysis = m ? JSON.parse(m[0]) : { overall_style: analysisText }; } catch (e2) { analysis = { overall_style: analysisText }; }\n  }\n\n  return [{\n    json: {\n      source_url: item.source_url,\n      title: item.title,\n      transcript: item.transcript,\n      duration_seconds: item.duration_seconds,\n      aspect_ratio: item.aspect_ratio,\n      source_type: item.source_type,\n      analysis: JSON.stringify(analysis),\n      debug_error: '',\n      debug_method: usedVideo ? 'VIDEO_UPLOADED' : 'TEXT_ONLY_FALLBACK'\n    }\n  }];\n} catch (err) {\n  return [{\n    json: {\n      source_url: item.source_url || '',\n      title: item.title || '',\n      transcript: item.transcript || '',\n      duration_seconds: item.duration_seconds || 0,\n      aspect_ratio: item.aspect_ratio || '16:9',\n      source_type: item.source_type || '',\n      analysis: '{}',\n      debug_error: 'ANALYZE ERROR: ' + err.message,\n      debug_method: 'FAILED'\n    }\n  }];\n}"
+      },
+      "id": "node-gemini-analyze",
+      "name": "Gemini: Watch & Analyze Video",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 320]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const GEMINI_KEY = 'YOUR_GEMINI_API_KEY';\nconst item = $input.first().json;\nconst transcript = (item.transcript || '').substring(0, 3000);\n\nif (item.debug_error) {\n  return [{\n    json: {\n      source_url: item.source_url || '', video_title: item.title || '', status: 'error',\n      segment_1_prompt: '', segment_2_prompt: '', segment_3_prompt: '', segment_4_prompt: '',\n      global_style: '', character_description: '',\n      segment_1_video_url: '', segment_2_video_url: '', segment_3_video_url: '', segment_4_video_url: '',\n      combined_video_url: '', completed_at: new Date().toISOString(),\n      debug_error: item.debug_error\n    }\n  }];\n}\n\ntry {\n  const userText = 'VIDEO ANALYSIS:\\n' + (item.analysis || '') + '\\n\\nTitle: ' + (item.title || '') + '\\nDuration: ' + (item.duration_seconds || 0) + 's\\n\\nTranscript: ' + transcript + '\\n\\n---\\n\\nWrite 4 simple video prompts inspired by this video. The prompts will be used in AI video generators (Sora, Seedance).\\n\\nSAFETY RULES (prompts get rejected if you break these):\\n- NEVER describe real people, celebrities, public figures, or named individuals\\n- NEVER mention ethnicity, race, or nationality of people\\n- NEVER mention real brand names, company names, or copyrighted characters\\n- NEVER reference the original video, YouTube, or any platform\\n- Use GENERIC character descriptions only: \"a person\", \"a woman\", \"a man\", \"someone\"\\n- Describe clothing, hair style, and actions but keep people anonymous and generic\\n- Keep it fully fictional and original\\n\\nPROMPT FORMAT RULES:\\n- MAX 50-70 words each. Short and simple.\\n- Plain natural English. Describe what the viewer sees.\\n- Include: who (generic person), what they do, where, lighting, colors\\n- DO NOT use timestamps like [0-3s]\\n- DO NOT use technical terms (dolly, pan, close-up, medium shot, key light)\\n- DO NOT end with tag lists (cinematic, 4K, photorealistic, etc.)\\n- DO NOT use negative words (no, not, without, never)\\n- DO NOT mention text, speech, dialogue, audio, or watermarks\\n\\nGOOD EXAMPLE: \"A person with long brown hair wearing a white dress walks through a sunlit lavender field, gently touching the flowers. A warm breeze moves their hair. Golden afternoon light and soft warm colors fill the scene.\"\\n\\nBAD EXAMPLE: \"A 25-year-old Caucasian woman named Sarah from the YouTube video walks through a field. Close-up shot. Cinematic, 4K, photorealistic, shallow depth of field.\"\\n\\nCONTINUITY: Same generic character and setting across all 4. Each flows naturally into the next.\\n\\nReturn ONLY valid JSON (no markdown):\\n{\\n  \"segment_1_prompt\": \"simple scene under 70 words\",\\n  \"segment_2_prompt\": \"continues from segment 1\",\\n  \"segment_3_prompt\": \"continues from segment 2\",\\n  \"segment_4_prompt\": \"continues from segment 3\",\\n  \"global_style\": \"the overall visual look\",\\n  \"character_description\": \"generic character description used across all segments\"\\n}';\n\n  const body = {\n    contents: [{ role: 'user', parts: [{ text: userText }] }],\n    systemInstruction: { parts: [{ text: 'Write simple, short, SAFE video prompts for AI video generators. These tools have strict content policies and will reject prompts that describe real people, mention ethnicity or race, include brand names, or are too long/technical. All characters must be generic and fictional. Keep prompts under 70 words. Use plain natural language. Describe the visual style and actions inspired by the video analysis, but make everything fictional and generic. Output ONLY valid JSON.' }] },\n    generationConfig: { temperature: 0.4 }\n  };\n\n  const response = await this.helpers.httpRequest({\n    method: 'POST',\n    url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + GEMINI_KEY,\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify(body),\n    timeout: 120000\n  });\n\n  const resp = typeof response === 'string' ? JSON.parse(response) : response;\n  if (resp.error) throw new Error('Gemini API error: ' + JSON.stringify(resp.error));\n  if (resp.candidates?.[0]?.finishReason === 'SAFETY') throw new Error('SAFETY filter blocked');\n\n  let text = resp.candidates?.[0]?.content?.parts?.[0]?.text || '';\n  if (!text) throw new Error('Empty response: ' + JSON.stringify(resp).substring(0, 300));\n  text = text.replace(/[\\x00-\\x1F\\x7F]/g, ' ');\n\n  let parsed;\n  try { parsed = JSON.parse(text); } catch (e) {\n    const m = text.match(/\\{[\\s\\S]*\\}/);\n    try { parsed = m ? JSON.parse(m[0]) : null; } catch (e2) { parsed = null; }\n  }\n\n  if (!parsed || !parsed.segment_1_prompt) throw new Error('Parse failed. Raw: ' + text.substring(0, 300));\n\n  return [{\n    json: {\n      source_url: item.source_url || '', video_title: item.title || '', status: 'prompts_ready',\n      segment_1_prompt: parsed.segment_1_prompt || '',\n      segment_2_prompt: parsed.segment_2_prompt || '',\n      segment_3_prompt: parsed.segment_3_prompt || '',\n      segment_4_prompt: parsed.segment_4_prompt || '',\n      global_style: parsed.global_style || '',\n      character_description: parsed.character_description || '',\n      segment_1_video_url: '', segment_2_video_url: '', segment_3_video_url: '', segment_4_video_url: '',\n      combined_video_url: '', completed_at: new Date().toISOString(),\n      debug_error: 'Method: ' + (item.debug_method || 'unknown')\n    }\n  }];\n} catch (err) {\n  return [{\n    json: {\n      source_url: item.source_url || '', video_title: item.title || '', status: 'error',\n      segment_1_prompt: '', segment_2_prompt: '', segment_3_prompt: '', segment_4_prompt: '',\n      global_style: '', character_description: '',\n      segment_1_video_url: '', segment_2_video_url: '', segment_3_video_url: '', segment_4_video_url: '',\n      combined_video_url: '', completed_at: new Date().toISOString(),\n      debug_error: 'PROMPTS ERROR: ' + err.message\n    }\n  }];\n}"
+      },
+      "id": "node-gemini-prompts",
+      "name": "Gemini: Generate 4 Sora Prompts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 320]
+    },
+
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": { "__rl": true, "value": "1wIh6AcVKWvef4NANk_c5a9jRiZ5gxrnBSHKdDB1yfc0", "mode": "id" },
+        "sheetName": { "__rl": true, "value": "gid=0", "mode": "id" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "source_url": "={{ $json.source_url }}",
+            "video_title": "={{ $json.video_title }}",
+            "status": "={{ $json.status }}",
+            "segment_1_prompt": "={{ $json.segment_1_prompt }}",
+            "segment_2_prompt": "={{ $json.segment_2_prompt }}",
+            "segment_3_prompt": "={{ $json.segment_3_prompt }}",
+            "segment_4_prompt": "={{ $json.segment_4_prompt }}",
+            "global_style": "={{ $json.global_style }}",
+            "character_description": "={{ $json.character_description }}",
+            "segment_1_video_url": "",
+            "segment_2_video_url": "",
+            "segment_3_video_url": "",
+            "segment_4_video_url": "",
+            "combined_video_url": "",
+            "completed_at": "={{ $json.completed_at }}",
+            "debug_error": "={{ $json.debug_error || '' }}"
+          },
+          "matchingColumns": ["source_url"],
+          "schema": [
+            { "id": "source_url", "displayName": "source_url", "required": false, "defaultMatch": true, "display": true, "type": "string", "canBeUsedToMatch": true },
+            { "id": "video_title", "displayName": "video_title", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
+            { "id": "status", "displayName": "status", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
+            { "id": "segment_1_prompt", "displayName": "segment_1_prompt", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
+            { "id": "segment_2_prompt", "displayName": "segment_2_prompt", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
+            { "id": "segment_3_prompt", "displayName": "segment_3_prompt", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
+            { "id": "segment_4_prompt", "displayName": "segment_4_prompt", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
+            { "id": "global_style", "displayName": "global_style", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
+            { "id": "character_description", "displayName": "character_description", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
+            { "id": "segment_1_video_url", "displayName": "segment_1_video_url", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
+            { "id": "segment_2_video_url", "displayName": "segment_2_video_url", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
+            { "id": "segment_3_video_url", "displayName": "segment_3_video_url", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
+            { "id": "segment_4_video_url", "displayName": "segment_4_video_url", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
+            { "id": "combined_video_url", "displayName": "combined_video_url", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
+            { "id": "completed_at", "displayName": "completed_at", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
+            { "id": "debug_error", "displayName": "debug_error", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-write-prompts",
+      "name": "Sheet: Write 4 Prompts",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1200, 320],
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "QMVQS07gdB5Lmx0f", "name": "Google Sheets account" }
+      }
+    },
+
+    {
+      "parameters": {
+        "pollTimes": { "item": [{ "mode": "everyMinute" }] },
+        "documentId": { "__rl": true, "value": "1wIh6AcVKWvef4NANk_c5a9jRiZ5gxrnBSHKdDB1yfc0", "mode": "id" },
+        "sheetName": { "__rl": true, "value": "gid=0", "mode": "id" },
+        "event": "rowUpdated",
+        "options": {}
+      },
+      "id": "trigger-combine",
+      "name": "Trigger: Row Updated (Videos Added)",
+      "type": "n8n-nodes-base.googleSheetsTrigger",
+      "typeVersion": 1,
+      "position": [240, 700],
+      "credentials": {
+        "googleSheetsTriggerOAuth2Api": { "id": "QMVQS07gdB5Lmx0f", "name": "Google Sheets account" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst url1 = (item.segment_1_video_url || '').trim();\nconst url2 = (item.segment_2_video_url || '').trim();\nconst url3 = (item.segment_3_video_url || '').trim();\nconst url4 = (item.segment_4_video_url || '').trim();\nconst status = (item.status || '').trim();\n\n// Collect all filled URLs (at least 1 needed)\nconst filledUrls = [url1, url2, url3, url4].filter(u => u);\nconst readyToCombine = status === 'prompts_ready' && filledUrls.length >= 1;\n\nif (readyToCombine) {\n  return [{ json: { source_url: item.source_url || '', video_title: item.video_title || '', segment_1_video_url: url1, segment_2_video_url: url2, segment_3_video_url: url3, segment_4_video_url: url4, total_segments: filledUrls.length } }];\n}\nreturn [];"
+      },
+      "id": "node-check-urls",
+      "name": "Check: All 4 URLs Filled?",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 700]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst rawUrls = [data.segment_1_video_url, data.segment_2_video_url, data.segment_3_video_url, data.segment_4_video_url].filter(u => u && u.trim());\n\nif (rawUrls.length < 1) return [{ json: { ...data, status: 'error', combined_video_url: '', error: 'No video URLs found' } }];\n\n// Convert Google Drive share links to direct download URLs\nfunction toDirectUrl(url) {\n  const driveMatch = url.match(/drive\\.google\\.com\\/file\\/d\\/([a-zA-Z0-9_-]+)/);\n  if (driveMatch) return 'https://drive.google.com/uc?export=download&id=' + driveMatch[1];\n  const driveMatch2 = url.match(/drive\\.google\\.com\\/open\\?id=([a-zA-Z0-9_-]+)/);\n  if (driveMatch2) return 'https://drive.google.com/uc?export=download&id=' + driveMatch2[1];\n  return url;\n}\n\nconst directUrls = rawUrls.map(toDirectUrl);\n\nreturn [{\n  json: {\n    source_url: data.source_url || '',\n    video_title: data.video_title || '',\n    status: 'ready_to_combine',\n    combined_video_url: directUrls.join(' | '),\n    total_segments: directUrls.length,\n    error: ''\n  }\n}];"
+      },
+      "id": "node-combine",
+      "name": "Collect Video Links",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 700]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": { "__rl": true, "value": "1wIh6AcVKWvef4NANk_c5a9jRiZ5gxrnBSHKdDB1yfc0", "mode": "id" },
+        "sheetName": { "__rl": true, "value": "gid=0", "mode": "id" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "source_url": "={{ $json.source_url }}",
+            "status": "={{ $json.status }}",
+            "combined_video_url": "={{ $json.combined_video_path || '' }}",
+            "error": "={{ $json.error || '' }}",
+            "completed_at": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": ["source_url"]
+        },
+        "options": {}
+      },
+      "id": "node-final-sheet",
+      "name": "Sheet: Update Final Status",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [960, 700],
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "QMVQS07gdB5Lmx0f", "name": "Google Sheets account" }
+      }
+    }
+  ],
+  "connections": {
+    "Trigger: New Video Link": {
+      "main": [[{ "node": "Fetch Video Data", "type": "main", "index": 0 }]]
+    },
+    "Fetch Video Data": {
+      "main": [[{ "node": "Gemini: Watch & Analyze Video", "type": "main", "index": 0 }]]
+    },
+    "Gemini: Watch & Analyze Video": {
+      "main": [[{ "node": "Gemini: Generate 4 Sora Prompts", "type": "main", "index": 0 }]]
+    },
+    "Gemini: Generate 4 Sora Prompts": {
+      "main": [[{ "node": "Sheet: Write 4 Prompts", "type": "main", "index": 0 }]]
+    },
+    "Trigger: Row Updated (Videos Added)": {
+      "main": [[{ "node": "Check: All 4 URLs Filled?", "type": "main", "index": 0 }]]
+    },
+    "Check: All 4 URLs Filled?": {
+      "main": [[{ "node": "Collect Video Links", "type": "main", "index": 0 }]]
+    },
+    "Collect Video Links": {
+      "main": [[{ "node": "Sheet: Update Final Status", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "executionTimeout": 3600
+  },
+  "versionId": "9.0.0",
+  "meta": { "instanceId": "sora-multi-segment-pipeline" },
+  "pinData": {},
+  "tags": [{ "name": "video-pipeline" }, { "name": "sora" }]
+}
