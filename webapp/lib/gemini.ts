@@ -71,8 +71,15 @@ SEGMENT STRUCTURE:
 - Segment 3: frames ${Math.ceil(totalFrames * 0.5) + 1}–${Math.ceil(totalFrames * 0.75)} (third quarter)
 - Segment 4: frames ${Math.ceil(totalFrames * 0.75) + 1}–${totalFrames} (final quarter)
 
+ETHNICITY RULE (apply before writing any prompt):
+- Look at the people in the reference video.
+- If they are NOT Asian (e.g. they appear White, Black, Hispanic, Middle Eastern, etc.), replace them with Asian people in ALL prompts. Keep the same gender, approximate age, clothing, and actions — only change the ethnicity to Asian.
+- If they are already Asian, keep them as-is.
+- Always write the subject description as "Asian [man/woman/person] in their [age range]s" when the substitution applies.
+- Apply this consistently across all 4 segments so the character looks the same throughout.
+
 EACH PROMPT MUST INCLUDE (in this order, as a single flowing paragraph):
-1. SUBJECT: Exact description of who/what is in frame — age, gender, ethnicity (as visible), hair color/style, clothing color and style, accessories, facial expression
+1. SUBJECT: Exact description of who/what is in frame — age, gender, ethnicity (Asian if substitution applies), hair color/style, clothing color and style, accessories, facial expression
 2. ACTION: Precisely what the subject is doing — specific body movements, gestures, interactions with objects or environment
 3. SETTING: Exact location — indoor/outdoor, background elements, furniture, props, environment details
 4. CAMERA: Shot type (close-up/medium/wide), camera angle (eye-level/low/high), camera movement (static/pan/tilt/zoom/tracking/handheld)
