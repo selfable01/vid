@@ -19,113 +19,122 @@ async function callGemini(body: object): Promise<string> {
   return data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
 }
 
-export interface CinematographyAnalysis {
-  subject: string;
-  setting: string;
-  composition: string;
-  camera_movement: string;
-  lighting: string;
-  color_palette: string;
-  texture_and_materials: string;
-  scene_progression: string;
-  key_moments: string[];
-  mood: string;
-  recommended_segments: number;
+export interface SeedanceSegment {
+  segment: number;        // 1–4
+  timeRange: string;      // e.g. "0:00–0:15"
+  prompt: string;         // detailed Seedance prompt
+  keyAction: string;      // one-line summary of what happens
 }
 
-export async function analyzeFrames(
+export interface SeedancePrompts {
+  videoSummary: string;
+  style: string;
+  segments: SeedanceSegment[];
+}
+
+export async function generateSeedancePrompts(
   frameBase64s: string[],
   title: string,
-  aspectRatio: string
-): Promise<CinematographyAnalysis> {
-  const parts: object[] = frameBase64s.map(data => ({
+  aspectRatio: string,
+  durationSeconds: number
+): Promise<SeedancePrompts> {
+  const totalFrames = frameBase64s.length;
+
+  // Build parts — send all frames so Gemini sees the full video
+  const parts: object[] = frameBase64s.map((data, i) => ({
     inlineData: { mimeType: 'image/jpeg', data },
+    // Each frame = 1 second (since we extract at 1fps)
   }));
 
+  const estimatedDuration = durationSeconds > 0 ? durationSeconds : totalFrames;
+
   parts.push({
-    text: `Title: ${title}\nAspect Ratio: ${aspectRatio}\n\nThese are ${frameBase64s.length} frames extracted at 1 frame per second from the actual video. Analyze ALL frames to understand the complete visual story. Produce the cinematographic analysis as instructed.`,
+    text: `
+Title: "${title}"
+Aspect Ratio: ${aspectRatio}
+Estimated Duration: ~${estimatedDuration} seconds
+Frames provided: ${totalFrames} frames (1 frame per second of video)
+
+TASK: Generate 4 sequential Seedance video prompts that together recreate this video exactly.
+Each segment covers 15 seconds of content (4 × 15s = 60 seconds total).
+The frames are in chronological order — use them to understand what happens at each part of the video.
+    `.trim(),
   });
 
-  const systemText = `You are an expert cinematographer and visual analyst. Analyze the video frames and output ONLY a valid JSON object (no markdown fences):
+  const systemText = `You are an expert AI video director and prompt engineer specializing in Seedance video generation.
+
+You receive video frames (1 per second, in order) from a reference video. Your job is to generate 4 detailed, sequential Seedance prompts that will recreate this video as faithfully as possible.
+
+SEGMENT STRUCTURE:
+- Segment 1: frames 1–${Math.ceil(totalFrames * 0.25)} (first quarter of video)
+- Segment 2: frames ${Math.ceil(totalFrames * 0.25) + 1}–${Math.ceil(totalFrames * 0.5)} (second quarter)
+- Segment 3: frames ${Math.ceil(totalFrames * 0.5) + 1}–${Math.ceil(totalFrames * 0.75)} (third quarter)
+- Segment 4: frames ${Math.ceil(totalFrames * 0.75) + 1}–${totalFrames} (final quarter)
+
+EACH PROMPT MUST INCLUDE (in this order, as a single flowing paragraph):
+1. SUBJECT: Exact description of who/what is in frame — age, gender, ethnicity (as visible), hair color/style, clothing color and style, accessories, facial expression
+2. ACTION: Precisely what the subject is doing — specific body movements, gestures, interactions with objects or environment
+3. SETTING: Exact location — indoor/outdoor, background elements, furniture, props, environment details
+4. CAMERA: Shot type (close-up/medium/wide), camera angle (eye-level/low/high), camera movement (static/pan/tilt/zoom/tracking/handheld)
+5. LIGHTING: Light source direction, quality (hard/soft), color temperature (warm/cool/neutral), shadows
+6. COLOR PALETTE: Dominant colors in the scene, overall color grading/mood
+7. CONTINUITY NOTE: Brief note on how this segment connects to the previous one (for segments 2–4)
+
+CRITICAL RULES:
+- Be extremely specific — never say "a person" when you can say "a woman in her late 20s with long dark hair wearing a white crop top and high-waisted jeans"
+- Each prompt must accurately reflect what is ACTUALLY happening in those frames — not generic descriptions
+- Maintain visual consistency across all 4 prompts (same characters look the same throughout)
+- Each prompt = exactly 15 seconds of video content
+- No dialogue, voiceover, or audio descriptions (Seedance is video-only)
+- End each prompt with: ", cinematic quality, 4K, [${aspectRatio} aspect ratio]"
+
+OUTPUT FORMAT — valid JSON only, no markdown fences:
 {
-  "subject": "primary subject(s), their appearance (age, clothing, hair, ethnicity as visible), and evolving actions across all frames",
-  "setting": "exact location, time of day, background elements, atmosphere",
-  "composition": "shot types used (wide/medium/close-up), angles, framing choices",
-  "camera_movement": "specific movements: static/pan/tilt/dolly/handheld/tracking",
-  "lighting": "key light direction, color temperature in Kelvin, shadow quality",
-  "color_palette": "dominant hues with approximate hex codes, grading style",
-  "texture_and_materials": "fabric, skin, surfaces, reflections visible in frames",
-  "scene_progression": "how the action evolves from first to last frame",
-  "key_moments": ["moment 1", "moment 2", "moment 3", "moment 4"],
-  "mood": "emotional register and energy level",
-  "recommended_segments": 4
-}
-Set recommended_segments to 4. Be concrete about what you SEE.`;
+  "videoSummary": "2-3 sentence description of the complete video",
+  "style": "visual style, color grade, and cinematographic feel of the original",
+  "segments": [
+    {
+      "segment": 1,
+      "timeRange": "0:00–0:15",
+      "keyAction": "one-line summary of main action in this segment",
+      "prompt": "full detailed Seedance prompt paragraph..."
+    },
+    {
+      "segment": 2,
+      "timeRange": "0:15–0:30",
+      "keyAction": "...",
+      "prompt": "..."
+    },
+    {
+      "segment": 3,
+      "timeRange": "0:30–0:45",
+      "keyAction": "...",
+      "prompt": "..."
+    },
+    {
+      "segment": 4,
+      "timeRange": "0:45–1:00",
+      "keyAction": "...",
+      "prompt": "..."
+    }
+  ]
+}`;
 
   const text = await callGemini({
     contents: [{ role: 'user', parts }],
     systemInstruction: { parts: [{ text: systemText }] },
-    generationConfig: { temperature: 0.3 },
+    generationConfig: { temperature: 0.2 },
   });
 
-  let clean = text.replace(/[\x00-\x1F\x7F]/g, ' ');
+  let clean = text.replace(/[\x00-\x1F\x7F]/g, ' ').trim();
+  // Strip markdown fences if present
+  clean = clean.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+
   try {
-    return JSON.parse(clean);
+    return JSON.parse(clean) as SeedancePrompts;
   } catch {
     const m = clean.match(/\{[\s\S]*\}/);
-    if (m) return JSON.parse(m[0]);
-    throw new Error('Could not parse Gemini analysis response');
-  }
-}
-
-export interface VeoPrompts {
-  video_description: string;
-  core_action: string;
-  initial_prompt: string;
-  extension_prompts: string[];
-}
-
-export async function generateVeoPrompts(
-  analysis: CinematographyAnalysis,
-  title: string,
-  aspectRatio: string,
-  frameCount: number
-): Promise<VeoPrompts> {
-  const systemText = `You are an expert video prompt engineer for Google Veo 3.1. Create exactly 4 prompts (1 initial + 3 extensions) for a ~32-second video (4 clips × 8 seconds each).
-
-INITIAL PROMPT (opening 8 seconds): 150-250 words, single paragraph. Include: exact subject description (age, clothing, hair, expression), setting, opening action, shot type, lighting with color temperature, color palette with hex codes, texture details.
-
-EXTENSION PROMPTS (3 prompts, each 8 seconds): 100-180 words each. Continue seamlessly — same characters, setting, colors. Describe progression of action, camera movements, emotional development.
-
-RULES:
-1. ALL prompts share the same visual universe — consistent appearance, colors, lighting
-2. Focus on CORE ACTION — what the subject is actively DOING
-3. Use strong motion verbs: glides, reaches, turns, tilts, steps, presses
-4. End EVERY prompt with: photorealistic, 4K resolution, cinematic lighting, 24fps, shallow depth of field
-5. NEVER include dialogue, voiceover, narration, or audio descriptions
-6. No negative phrasing
-7. Output ONLY valid JSON, no markdown fences:
-{
-  "video_description": "2-3 sentence summary",
-  "core_action": "the main action",
-  "initial_prompt": "detailed opening prompt...",
-  "extension_prompts": ["extension 1", "extension 2", "extension 3"]
-}`;
-
-  const userText = `Create 4 Veo 3.1 prompts based on this cinematographic analysis:\n\n${JSON.stringify(analysis, null, 2)}\n\nTitle: ${title}\nAspect Ratio: ${aspectRatio}\nFrames analyzed: ${frameCount}\n\nGenerate exactly 4 prompts (1 initial + 3 extensions) for a ~32-second video.`;
-
-  const text = await callGemini({
-    contents: [{ role: 'user', parts: [{ text: userText }] }],
-    systemInstruction: { parts: [{ text: systemText }] },
-    generationConfig: { temperature: 0.3 },
-  });
-
-  let clean = text.replace(/[\x00-\x1F\x7F]/g, ' ');
-  try {
-    return JSON.parse(clean);
-  } catch {
-    const m = clean.match(/\{[\s\S]*\}/);
-    if (m) return JSON.parse(m[0]);
-    throw new Error('Could not parse Gemini prompts response');
+    if (m) return JSON.parse(m[0]) as SeedancePrompts;
+    throw new Error('Could not parse Gemini response as JSON');
   }
 }
