@@ -3,6 +3,7 @@
   "functions": {
     "app/api/frames/route.ts": { "maxDuration": 300 },
     "app/api/analyze/route.ts": { "maxDuration": 120 },
+    "app/api/combine/route.ts": { "maxDuration": 120 },
     "app/api/debug/route.ts": { "maxDuration": 30 }
   }
 }

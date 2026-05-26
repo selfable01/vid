@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 
 type Step = 'idle' | 'extracting' | 'analyzing' | 'done' | 'error';
 
@@ -101,6 +102,11 @@ export default function Home() {
 
         {/* Header */}
         <div className="text-center space-y-2">
+          <div className="flex items-center justify-center gap-4 mb-4">
+            <Link href="/combine" className="text-xs text-zinc-500 hover:text-zinc-300 underline">
+              Combine Videos →
+            </Link>
+          </div>
           <h1 className="text-3xl font-bold tracking-tight">Seedance Prompt Generator</h1>
           <p className="text-zinc-400 text-sm">
             Paste a YouTube or Instagram Reel URL. We'll analyze it frame-by-frame and generate
