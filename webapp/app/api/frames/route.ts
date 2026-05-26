@@ -60,15 +60,26 @@ async function ytDlp(bin: string, url: string, outputFile: string, cookiesFile: 
   const args = [
     url,
     '-o', outputFile,
-    '-f', 'best[ext=mp4]/bestvideo[ext=mp4]+bestaudio/best',
+    // Use iOS player client — avoids YouTube's n-challenge (no JS runtime needed)
+    '--extractor-args', 'youtube:player_client=ios',
+    '-f', 'best[ext=mp4]/bestvideo+bestaudio/best',
+    '--merge-output-format', 'mp4',
     '--no-playlist',
     '--no-check-certificates',
     '--socket-timeout', '30',
     '--retries', '3',
+    '--no-warnings',
   ];
   if (cookiesFile) args.push('--cookies', cookiesFile);
 
-  const { stderr } = await execFileAsync(bin, args, { maxBuffer: 10 * 1024 * 1024 });
+  // Include Node.js in PATH so yt-dlp can use it for JS challenge solving as fallback
+  const nodeBin = path.dirname(process.execPath);
+  const env = {
+    ...process.env,
+    PATH: `${nodeBin}:/usr/local/bin:/usr/bin:/bin:${process.env.PATH ?? ''}`,
+  };
+
+  const { stderr } = await execFileAsync(bin, args, { maxBuffer: 10 * 1024 * 1024, env });
   if (stderr) console.log('[yt-dlp stderr]', stderr.slice(0, 500));
 }
 
