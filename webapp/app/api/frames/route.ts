@@ -69,10 +69,11 @@ async function ytDlp(bin: string, url: string, outputFile: string, cookiesFile: 
     '--socket-timeout', '30',
     '--retries', '3',
     '--no-warnings',
+    // Tell yt-dlp exactly where Node.js is so it can solve JS challenges
+    '--js-runtimes', `node:${process.execPath}`,
   ];
   if (cookiesFile) args.push('--cookies', cookiesFile);
 
-  // Include Node.js in PATH so yt-dlp can use it for JS challenge solving as fallback
   const nodeBin = path.dirname(process.execPath);
   const env = {
     ...process.env,
