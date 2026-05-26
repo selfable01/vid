@@ -1,4 +1,5 @@
 {
+  "buildCommand": "curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o node_modules/youtube-dl-exec/bin/yt-dlp && chmod +x node_modules/youtube-dl-exec/bin/yt-dlp && npm run build",
   "functions": {
     "app/api/frames/route.ts": { "maxDuration": 300 },
     "app/api/analyze/route.ts": { "maxDuration": 120 }

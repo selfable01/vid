@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getYouTubeStream, extractYouTubeId, extractInstagramId } from '@/lib/youtube';
-import { extractFramesFromStream } from '@/lib/ffmpeg';
+import { extractFramesFromStream, extractFramesFromFile } from '@/lib/ffmpeg';
+import youtubeDl from 'youtube-dl-exec';
+import * as path from 'path';
+import * as os from 'os';
+import * as fs from 'fs';
 
 export const maxDuration = 300; // 5 min — requires Vercel Pro
 
@@ -25,59 +29,48 @@ export async function POST(req: NextRequest) {
       const { stream, title, durationSeconds, aspectRatio } = await getYouTubeStream(url);
       const frames = await extractFramesFromStream(stream, videoId, 15);
 
-      return NextResponse.json({
-        videoId,
-        title,
-        durationSeconds,
-        aspectRatio,
-        frameCount: frames.length,
-        frames,
-      });
+      return NextResponse.json({ videoId, title, durationSeconds, aspectRatio, frameCount: frames.length, frames });
     }
 
     if (isInstagram) {
       const shortcode = extractInstagramId(url);
       if (!shortcode) return NextResponse.json({ error: 'Invalid Instagram URL' }, { status: 400 });
 
-      // Instagram: scrape the video URL from the page then stream through ffmpeg
-      const pageRes = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept-Language': 'en-US,en;q=0.9',
-        },
-      });
-      const html = await pageRes.text();
+      const tmpFile = path.join(os.tmpdir(), `ig_${shortcode}_${Date.now()}.mp4`);
 
-      let videoUrl = '';
-      const ogVideoMatch = html.match(/property="og:video"[^>]*content="([^"]+)"/);
-      if (ogVideoMatch) videoUrl = ogVideoMatch[1].replace(/&amp;/g, '&');
-
-      if (!videoUrl) {
-        const sharedDataMatch = html.match(/"video_url"\s*:\s*"([^"]+)"/);
-        if (sharedDataMatch) videoUrl = sharedDataMatch[1].replace(/\\u0026/g, '&');
-      }
-
-      let title = shortcode;
-      const titleMatch = html.match(/property="og:title"[^>]*content="([^"]+)"/);
-      if (titleMatch) title = titleMatch[1];
-
-      if (!videoUrl) {
+      try {
+        // Use yt-dlp (via youtube-dl-exec) — handles Instagram auth and CDN changes automatically
+        await youtubeDl(url, {
+          output: tmpFile,
+          format: 'best[ext=mp4]/bestvideo[ext=mp4]+bestaudio/best',
+          noPlaylist: true,
+          noCheckCertificates: true,
+          userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
+        });
+      } catch (dlErr) {
+        const msg = dlErr instanceof Error ? dlErr.message : String(dlErr);
         return NextResponse.json({
-          error: 'Could not extract Instagram video URL. The reel may be private or require login.',
+          error: `Could not download Instagram reel. Make sure the reel is public. Details: ${msg.slice(0, 300)}`,
         }, { status: 422 });
       }
 
-      // Stream the video through ffmpeg
-      const videoRes = await fetch(videoUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-      });
-      if (!videoRes.ok || !videoRes.body) {
-        return NextResponse.json({ error: 'Failed to download Instagram video' }, { status: 422 });
+      if (!fs.existsSync(tmpFile)) {
+        return NextResponse.json({ error: 'Download completed but output file not found.' }, { status: 500 });
       }
 
-      const { Readable } = await import('stream');
-      const nodeStream = Readable.fromWeb(videoRes.body as Parameters<typeof Readable.fromWeb>[0]);
-      const frames = await extractFramesFromStream(nodeStream, shortcode, 15);
+      let frames: string[] = [];
+      try {
+        frames = await extractFramesFromFile(tmpFile, shortcode, 15);
+      } finally {
+        try { fs.rmSync(tmpFile, { force: true }); } catch { /* ignore */ }
+      }
+
+      // Get title via yt-dlp metadata (best effort)
+      let title = shortcode;
+      try {
+        const info = await youtubeDl(url, { dumpSingleJson: true, noWarnings: true, noPlaylist: true }) as Record<string, unknown>;
+        title = (info?.title as string) || (info?.description as string)?.slice(0, 80) || shortcode;
+      } catch { /* ignore */ }
 
       return NextResponse.json({
         videoId: shortcode,
