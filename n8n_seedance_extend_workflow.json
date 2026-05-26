@@ -3,9 +3,23 @@
   "nodes": [
     {
       "parameters": {
-        "pollTimes": { "item": [{ "mode": "everyMinute" }] },
-        "documentId": { "__rl": true, "value": "1wIh6AcVKWvef4NANk_c5a9jRiZ5gxrnBSHKdDB1yfc0", "mode": "id" },
-        "sheetName": { "__rl": true, "value": "gid=0", "mode": "id" },
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "documentId": {
+          "__rl": true,
+          "value": "1wIh6AcVKWvef4NANk_c5a9jRiZ5gxrnBSHKdDB1yfc0",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "id"
+        },
         "event": "rowAdded",
         "options": {}
       },
@@ -13,12 +27,17 @@
       "name": "Trigger: New Video Link",
       "type": "n8n-nodes-base.googleSheetsTrigger",
       "typeVersion": 1,
-      "position": [240, 320],
+      "position": [
+        240,
+        320
+      ],
       "credentials": {
-        "googleSheetsTriggerOAuth2Api": { "id": "QMVQS07gdB5Lmx0f", "name": "Google Sheets account" }
+        "googleSheetsTriggerOAuth2Api": {
+          "id": "QMVQS07gdB5Lmx0f",
+          "name": "Google Sheets account"
+        }
       }
     },
-
     {
       "parameters": {
         "jsCode": "const results = [];\nfor (const item of $input.all()) {\n  const url = item.json.source_url;\n  let sourceType = '';\n  if (url.includes('youtube.com') || url.includes('youtu.be')) sourceType = 'youtube';\n  else if (url.includes('instagram.com/reel') || url.includes('instagram.com/p/')) sourceType = 'instagram';\n\n  if (!sourceType) {\n    results.push({ json: { source_url: url, source_type: 'unknown', video_id: '', title: 'ERROR: Unsupported URL', transcript: '', duration_seconds: 0, aspect_ratio: '16:9', video_stream_urls: [] } });\n    continue;\n  }\n\n  if (sourceType === 'youtube') {\n    let vid = '';\n    if (url.includes('v=')) vid = url.split('v=')[1].split('&')[0];\n    else if (url.includes('youtu.be/')) vid = url.split('youtu.be/')[1].split('?')[0];\n    else if (url.includes('/shorts/')) vid = url.split('/shorts/')[1].split('?')[0];\n    if (!vid) { results.push({ json: { source_url: url, source_type: 'youtube', video_id: '', title: 'ERROR: Invalid YouTube URL', transcript: '', duration_seconds: 0, aspect_ratio: '16:9', video_stream_urls: [] } }); continue; }\n\n    let title = '';\n    try {\n      const r = await this.helpers.httpRequest({ method: 'GET', url: 'https://www.youtube.com/oembed?format=json&url=https://www.youtube.com/watch?v=' + vid });\n      title = (typeof r === 'string' ? JSON.parse(r) : r).title || '';\n    } catch (e) { title = 'Untitled Video'; }\n\n    let transcript = ''; let duration_seconds = 0;\n    let videoStreamUrls = [];\n\n    const clients = [\n      { clientName: 'ANDROID', clientVersion: '19.09.37' },\n      { clientName: 'IOS', clientVersion: '19.09.3' },\n      { clientName: 'WEB', clientVersion: '2.20240313.00.00' }\n    ];\n\n    for (const client of clients) {\n      try {\n        const playerResp = await this.helpers.httpRequest({\n          method: 'POST',\n          url: 'https://www.youtube.com/youtubei/v1/player?prettyPrint=false',\n          headers: { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0' },\n          body: JSON.stringify({ videoId: vid, context: { client: { ...client, hl: 'en' } } })\n        });\n        const pd = typeof playerResp === 'string' ? JSON.parse(playerResp) : playerResp;\n        if (!duration_seconds) duration_seconds = parseInt(pd?.videoDetails?.lengthSeconds || '0', 10);\n\n        const formats = [...(pd?.streamingData?.formats || []), ...(pd?.streamingData?.adaptiveFormats || [])];\n        for (const f of formats) {\n          if (f.url && f.mimeType && f.mimeType.includes('video/mp4')) {\n            videoStreamUrls.push({ url: f.url, itag: f.itag, quality: f.qualityLabel || f.quality || '', width: f.width || 0 });\n          }\n        }\n\n        if (!transcript) {\n          const tracks = pd?.captions?.playerCaptionsTracklistRenderer?.captionTracks;\n          if (tracks && tracks.length > 0) {\n            const t = tracks.find(t => t.languageCode === 'en') || tracks[0];\n            const caps = await this.helpers.httpRequest({ method: 'GET', url: t.baseUrl + '&fmt=json3' });\n            const cd = typeof caps === 'string' ? JSON.parse(caps) : caps;\n            transcript = (cd.events || []).filter(e => e.segs).map(e => e.segs.map(s => s.utf8).join('')).join(' ').replace(/\\s+/g, ' ').trim();\n          }\n          if (!transcript) { const desc = pd?.videoDetails?.shortDescription; if (desc && desc.length > 10) transcript = desc; }\n        }\n\n        if (videoStreamUrls.length > 0) break;\n      } catch (e) { /* try next client */ }\n    }\n\n    if (!transcript) transcript = 'No transcript available.';\n    videoStreamUrls.sort((a, b) => (a.width || 9999) - (b.width || 9999));\n\n    results.push({ json: { source_url: url, source_type: 'youtube', video_id: vid, title, transcript, duration_seconds, aspect_ratio: url.includes('/shorts/') ? '9:16' : '16:9', video_stream_urls: videoStreamUrls } });\n  }\n\n  if (sourceType === 'instagram') {\n    const reelMatch = url.match(/instagram\\.com\\/(?:reel|reels|p)\\/([A-Za-z0-9_-]+)/);\n    const shortcode = reelMatch ? reelMatch[1] : '';\n    if (!shortcode) { results.push({ json: { source_url: url, source_type: 'instagram', video_id: '', title: 'ERROR: Invalid Instagram URL', transcript: '', duration_seconds: 0, aspect_ratio: '9:16', video_stream_urls: [] } }); continue; }\n    let title = '';\n    try {\n      const r = await this.helpers.httpRequest({ method: 'GET', url: 'https://api.instagram.com/oembed/?url=' + encodeURIComponent(url) + '&format=json', headers: { 'User-Agent': 'Mozilla/5.0' } });\n      const d = typeof r === 'string' ? JSON.parse(r) : r;\n      title = d.title || (d.author_name ? 'Instagram Reel by ' + d.author_name : '');\n    } catch (e) {}\n    if (!title) title = 'Instagram Reel ' + shortcode;\n    results.push({ json: { source_url: url, source_type: 'instagram', video_id: shortcode, title, transcript: title, duration_seconds: 0, aspect_ratio: '9:16', video_stream_urls: [] } });\n  }\n}\nreturn results;"
@@ -27,9 +46,11 @@
       "name": "Fetch Video Data",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [480, 320]
+      "position": [
+        480,
+        320
+      ]
     },
-
     {
       "parameters": {
         "jsCode": "const GEMINI_KEY = 'AIzaSyDGs6effDaTvVzlnxKitiqE366r20lAfQQ';\nconst item = $input.first().json;\n\ntry {\n  let fileUri = '';\n  let usedVideo = false;\n  let usedThumbnails = false;\n  let thumbnailBase64List = [];\n  let downloadDebug = [];\n\n  // STEP 1: Try to download & upload ACTUAL VIDEO to Gemini\n  const streamUrls = item.video_stream_urls || [];\n  for (let i = 0; i < Math.min(streamUrls.length, 5); i++) {\n    if (usedVideo) break;\n    const streamInfo = streamUrls[i];\n    try {\n      downloadDebug.push('Trying itag=' + streamInfo.itag + ' q=' + streamInfo.quality);\n      const videoResp = await this.helpers.httpRequest({\n        method: 'GET', url: streamInfo.url, encoding: 'arraybuffer', returnFullResponse: true, timeout: 90000,\n        headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.101 Mobile Safari/537.36', 'Accept': '*/*', 'Accept-Encoding': 'identity', 'Range': 'bytes=0-' }\n      });\n      const videoBuffer = Buffer.from(videoResp.body);\n      const videoSizeMB = videoBuffer.length / (1024 * 1024);\n      downloadDebug.push('Got ' + videoSizeMB.toFixed(1) + 'MB');\n      if (videoSizeMB < 0.05) { downloadDebug.push('Too small'); continue; }\n      if (videoSizeMB > 200) { downloadDebug.push('Too large'); continue; }\n\n      const initResp = await this.helpers.httpRequest({\n        method: 'POST', url: 'https://generativelanguage.googleapis.com/upload/v1beta/files?key=' + GEMINI_KEY,\n        headers: { 'X-Goog-Upload-Protocol': 'resumable', 'X-Goog-Upload-Command': 'start', 'X-Goog-Upload-Header-Content-Length': videoBuffer.length.toString(), 'X-Goog-Upload-Header-Content-Type': 'video/mp4', 'Content-Type': 'application/json' },\n        body: JSON.stringify({ file: { displayName: 'src_' + Date.now() + '.mp4' } }), returnFullResponse: true\n      });\n      const uploadUrl = initResp.headers['x-goog-upload-url'];\n      if (!uploadUrl) { downloadDebug.push('No upload URL'); continue; }\n\n      const uploadResp = await this.helpers.httpRequest({\n        method: 'POST', url: uploadUrl,\n        headers: { 'Content-Length': videoBuffer.length.toString(), 'X-Goog-Upload-Offset': '0', 'X-Goog-Upload-Command': 'upload, finalize' },\n        body: videoBuffer, returnFullResponse: true, timeout: 240000\n      });\n      const fileInfo = typeof uploadResp.body === 'string' ? JSON.parse(uploadResp.body) : uploadResp.body;\n      let fileName = fileInfo?.file?.name;\n      fileUri = fileInfo?.file?.uri || '';\n      let fileState = fileInfo?.file?.state || 'PROCESSING';\n      downloadDebug.push('Uploaded, state=' + fileState);\n\n      let pollCount = 0;\n      while (fileState === 'PROCESSING' && pollCount < 60) {\n        await new Promise(r => setTimeout(r, 5000)); pollCount++;\n        const sr = await this.helpers.httpRequest({ method: 'GET', url: 'https://generativelanguage.googleapis.com/v1beta/' + fileName + '?key=' + GEMINI_KEY });\n        const sd = typeof sr === 'string' ? JSON.parse(sr) : sr;\n        fileState = sd.state; fileUri = sd.uri || fileUri;\n      }\n      if (fileState === 'ACTIVE' && fileUri) { usedVideo = true; downloadDebug.push('VIDEO READY'); }\n      else { downloadDebug.push('Not active: ' + fileState); fileUri = ''; }\n    } catch (dlErr) { downloadDebug.push('Fail: ' + dlErr.message.substring(0, 80)); }\n  }\n\n  // STEP 2 FALLBACK: Multiple thumbnails\n  if (!usedVideo && item.video_id && item.source_type === 'youtube') {\n    downloadDebug.push('Trying thumbnails');\n    const vid = item.video_id;\n    const thumbUrls = [\n      'https://img.youtube.com/vi/' + vid + '/maxresdefault.jpg',\n      'https://img.youtube.com/vi/' + vid + '/sddefault.jpg',\n      'https://img.youtube.com/vi/' + vid + '/hqdefault.jpg',\n      'https://img.youtube.com/vi/' + vid + '/1.jpg',\n      'https://img.youtube.com/vi/' + vid + '/2.jpg',\n      'https://img.youtube.com/vi/' + vid + '/3.jpg'\n    ];\n    for (const tUrl of thumbUrls) {\n      try {\n        const tr = await this.helpers.httpRequest({ method: 'GET', url: tUrl, encoding: 'arraybuffer', returnFullResponse: true, timeout: 10000 });\n        const buf = Buffer.from(tr.body);\n        if (buf.length > 5000) thumbnailBase64List.push(buf.toString('base64'));\n      } catch (e) {}\n    }\n    if (thumbnailBase64List.length > 0) { usedThumbnails = true; downloadDebug.push('Got ' + thumbnailBase64List.length + ' thumbs'); }\n  }\n\n  // STEP 3: Call Gemini\n  const parts = [];\n  if (usedVideo && fileUri) {\n    parts.push({ fileData: { mimeType: 'video/mp4', fileUri: fileUri } });\n    parts.push({ text: `WATCH THE VIDEO FILE ABOVE carefully. IGNORE the title — it may be misleading. Describe ONLY what you SEE.\\n\\nTitle (may be wrong): ${item.title || ''}\\nDuration: ${item.duration_seconds || 0}s\\n\\nFor each scene describe: subject appearance (hair, build, skin, clothing), actions, environment, camera work, lighting, colors, mood.\\n\\nReturn ONLY valid JSON:\\n{\\n  \"scene_count\": <n>,\\n  \"scenes\": [{\"timestamp\":\"0-5s\",\"subject_appearance\":\"exact\",\"clothing\":\"exact\",\"actions\":\"exact\",\"setting\":\"exact\",\"camera\":\"exact\",\"lighting\":\"exact\",\"colors\":\"exact\",\"mood\":\"exact\"}],\\n  \"overall_style\": \"visual style\",\\n  \"consistent_elements\": \"what stays the same\",\\n  \"video_narrative\": \"visual story start to end\"\\n}` });\n  } else if (usedThumbnails) {\n    for (let i = 0; i < Math.min(thumbnailBase64List.length, 5); i++) {\n      parts.push({ inlineData: { mimeType: 'image/jpeg', data: thumbnailBase64List[i] } });\n    }\n    parts.push({ text: `LOOK AT THESE ${Math.min(thumbnailBase64List.length, 5)} IMAGES from a video. TRUST THE IMAGES, not the title.\\n\\nTitle (may be misleading): ${item.title || ''}\\nTranscript: ${(item.transcript || '').substring(0, 1500)}\\n\\nDescribe what you SEE in each image: subjects, clothing, actions, setting, lighting, colors.\\n\\nReturn ONLY valid JSON:\\n{\\n  \"scene_count\": <n>,\\n  \"scenes\": [{\"timestamp\":\"image 1\",\"subject_appearance\":\"what you see\",\"clothing\":\"what you see\",\"actions\":\"what you see\",\"setting\":\"what you see\",\"camera\":\"what you see\",\"lighting\":\"what you see\",\"colors\":\"what you see\",\"mood\":\"what you see\"}],\\n  \"overall_style\": \"style\",\\n  \"consistent_elements\": \"consistent\",\\n  \"video_narrative\": \"narrative\"\\n}` });\n  } else {\n    parts.push({ text: `Could not load video. Infer from transcript.\\n\\nTitle: ${item.title || ''}\\nTranscript: ${item.transcript || ''}\\n\\nReturn ONLY valid JSON:\\n{\\n  \"scene_count\": 3,\\n  \"scenes\": [{\"timestamp\":\"inferred\",\"subject_appearance\":\"inferred\",\"clothing\":\"inferred\",\"actions\":\"inferred\",\"setting\":\"inferred\",\"camera\":\"inferred\",\"lighting\":\"inferred\",\"colors\":\"inferred\",\"mood\":\"inferred\"}],\\n  \"overall_style\": \"inferred\",\\n  \"consistent_elements\": \"inferred\",\\n  \"video_narrative\": \"inferred\"\\n}` });\n  }\n\n  const sysText = usedVideo\n    ? 'You are watching an actual video. Describe ONLY what you see. The title may be misleading — trust your eyes. Be extremely specific about visual details. Output ONLY valid JSON.'\n    : usedThumbnails\n    ? 'You are looking at actual screenshots from a video. Describe ONLY what you see. Trust the images, not the title. Output ONLY valid JSON.'\n    : 'Infer visual content from transcript. Mark as inference. Output ONLY valid JSON.';\n\n  const resp = await this.helpers.httpRequest({\n    method: 'POST',\n    url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + GEMINI_KEY,\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify({ contents: [{ role: 'user', parts: parts }], systemInstruction: { parts: [{ text: sysText }] }, generationConfig: { temperature: 0.1 } }),\n    timeout: 240000\n  });\n  const r = typeof resp === 'string' ? JSON.parse(resp) : resp;\n  if (r.error) throw new Error('Gemini: ' + JSON.stringify(r.error));\n  let aText = r.candidates?.[0]?.content?.parts?.[0]?.text || '';\n  aText = aText.replace(/[\\x00-\\x1F\\x7F]/g, ' ');\n  let analysis;\n  try { analysis = JSON.parse(aText); } catch (e) { const m = aText.match(/\\{[\\s\\S]*\\}/); try { analysis = m ? JSON.parse(m[0]) : { overall_style: aText }; } catch (e2) { analysis = { overall_style: aText }; } }\n  const method = usedVideo ? 'VIDEO_UPLOADED' : usedThumbnails ? 'MULTI_THUMBNAIL' : 'TEXT_ONLY';\n\n  return [{ json: { source_url: item.source_url, title: item.title, transcript: item.transcript, duration_seconds: item.duration_seconds, aspect_ratio: item.aspect_ratio, source_type: item.source_type, analysis: JSON.stringify(analysis), debug_method: method, debug_details: downloadDebug.join(' | ') } }];\n} catch (err) {\n  return [{ json: { source_url: item.source_url || '', title: item.title || '', transcript: '', duration_seconds: 0, aspect_ratio: item.aspect_ratio || '16:9', source_type: item.source_type || '', analysis: '{}', debug_method: 'FAILED', debug_details: 'ERROR: ' + err.message } }];\n}"
@@ -38,20 +59,30 @@
       "name": "Gemini: Watch & Analyze Video",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [720, 320]
+      "position": [
+        720,
+        320
+      ],
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 10000
     },
-
     {
       "parameters": {
-        "jsCode": "const GEMINI_KEY = 'AIzaSyDGs6effDaTvVzlnxKitiqE366r20lAfQQ';\nconst item = $input.first().json;\n\ntry {\n  let analysis = {};\n  try { analysis = JSON.parse(item.analysis || '{}'); } catch(e) { analysis = { overall_style: item.analysis }; }\n\n  let sceneDetails = '';\n  if (analysis.scenes && analysis.scenes.length > 0) {\n    sceneDetails = analysis.scenes.map((s, i) => {\n      return `Scene ${i+1} (${s.timestamp || ''}):\\n  Subject: ${s.subject_appearance || ''}\\n  Clothing: ${s.clothing || ''}\\n  Actions: ${s.actions || ''}\\n  Setting: ${s.setting || ''}\\n  Camera: ${s.camera || ''}\\n  Lighting: ${s.lighting || ''}\\n  Colors: ${s.colors || ''}\\n  Mood: ${s.mood || ''}`;\n    }).join('\\n\\n');\n  }\n\n  // We need 5 clips x 10s = 50 seconds (>45s target)\n  // Generate 5 sequential prompts from our 3-act structure\n  const userText = `VISUAL ANALYSIS OF ORIGINAL VIDEO:\\n\\n${sceneDetails || item.analysis || 'No analysis'}\\n\\nStyle: ${analysis.overall_style || 'unknown'}\\nConsistent: ${analysis.consistent_elements || 'unknown'}\\nNarrative: ${analysis.video_narrative || 'unknown'}\\n\\nAnalysis method: ${item.debug_method || 'unknown'}\\n\\n---\\n\\nWrite exactly 5 sequential video prompts that RECREATE this video\\'s visual content. Each prompt = one 10-second clip. The Seedance AI will EXTEND from the last frame of each clip into the next, so they must flow seamlessly.\\n\\nCRITICAL — MATCH THE ORIGINAL:\\n- Recreate the SAME environment, lighting, colors, mood, and actions\\n- Base prompts on the SCENE DESCRIPTIONS above (from watching the actual video)\\n- Same character throughout all 5 clips\\n\\nSTRUCTURE (3-act across 5 clips):\\n- Clip 1: Opening — establish character, setting, mood (text-to-video, first generation)\\n- Clip 2: Opening continues — character settles into the scene (extends from clip 1)\\n- Clip 3: Middle — main action/development begins (extends from clip 2)\\n- Clip 4: Middle continues — action intensifies or progresses (extends from clip 3)\\n- Clip 5: Conclusion — scene resolves, final moment (extends from clip 4)\\n\\nEXTENSION RULES (clips 2-5 extend from previous):\\n- Start each prompt describing WHERE the scene picks up from\\n- Describe the NEXT action that naturally follows\\n- Keep the same character, setting, lighting throughout\\n- Gradual progression, not sudden jumps\\n\\nSAFETY:\\n- No real people, celebrities, named individuals\\n- No ethnicity, race, nationality\\n- No brand names\\n- Generic characters: \"a person\", \"a woman\", \"a man\"\\n\\nFORMAT:\\n- 80-120 words each\\n- Plain English, visual descriptions only\\n- Include: subject appearance, actions, environment, lighting, colors\\n- NO timestamps, NO technical jargon, NO tag lists\\n- NO negative words, NO text/speech/audio mentions\\n- End each with style anchors: photorealistic, 4K, cinematic lighting\\n\\nReturn ONLY valid JSON:\\n{\\n  \"clip_1_prompt\": \"opening scene 80-120 words\",\\n  \"clip_2_prompt\": \"continues from clip 1\",\\n  \"clip_3_prompt\": \"middle development\",\\n  \"clip_4_prompt\": \"middle continues\",\\n  \"clip_5_prompt\": \"conclusion\",\\n  \"global_style\": \"consistent visual style\",\\n  \"character_description\": \"generic character used throughout\"\\n}`;\n\n  const resp = await this.helpers.httpRequest({\n    method: 'POST',\n    url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + GEMINI_KEY,\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify({\n      contents: [{ role: 'user', parts: [{ text: userText }] }],\n      systemInstruction: { parts: [{ text: 'You write AI video generation prompts that faithfully recreate existing videos. You receive visual analysis from Gemini which watched the actual video. Write 5 sequential prompts where each clip extends from the previous one\\'s last frame. Match the original video\\'s setting, actions, lighting, colors, and mood. Keep characters generic for safety. Use concrete visual language. Output ONLY valid JSON.' }] },\n      generationConfig: { temperature: 0.3 }\n    }),\n    timeout: 120000\n  });\n\n  const r = typeof resp === 'string' ? JSON.parse(resp) : resp;\n  if (r.error) throw new Error('Gemini: ' + JSON.stringify(r.error));\n  let text = r.candidates?.[0]?.content?.parts?.[0]?.text || '';\n  text = text.replace(/[\\x00-\\x1F\\x7F]/g, ' ');\n  let parsed;\n  try { parsed = JSON.parse(text); } catch (e) { const m = text.match(/\\{[\\s\\S]*\\}/); try { parsed = m ? JSON.parse(m[0]) : null; } catch (e2) { parsed = null; } }\n  if (!parsed || !parsed.clip_1_prompt) throw new Error('Parse failed: ' + text.substring(0, 300));\n\n  const prompts = [\n    parsed.clip_1_prompt || '',\n    parsed.clip_2_prompt || '',\n    parsed.clip_3_prompt || '',\n    parsed.clip_4_prompt || '',\n    parsed.clip_5_prompt || ''\n  ];\n\n  return [{ json: {\n    source_url: item.source_url || '',\n    title: item.title || '',\n    aspect_ratio: item.aspect_ratio || '16:9',\n    source_type: item.source_type || '',\n    all_prompts: JSON.stringify(prompts),\n    current_clip: 0,\n    total_clips: 5,\n    clip_duration: 10,\n    last_video_url: '',\n    all_video_urls: '[]',\n    global_style: parsed.global_style || '',\n    character_description: parsed.character_description || '',\n    debug_method: item.debug_method || '',\n    debug_details: item.debug_details || '',\n    poll_count: 0\n  } }];\n} catch (err) {\n  return [{ json: {\n    source_url: item.source_url || '', title: item.title || '',\n    aspect_ratio: item.aspect_ratio || '16:9', source_type: item.source_type || '',\n    all_prompts: '[]', current_clip: 0, total_clips: 0, clip_duration: 10,\n    last_video_url: '', all_video_urls: '[]', global_style: '', character_description: '',\n    debug_method: 'PROMPT_ERROR', debug_details: err.message\n  } }];\n}"
+        "jsCode": "const GEMINI_KEY = 'AIzaSyDGs6effDaTvVzlnxKitiqE366r20lAfQQ';\nconst item = $input.first().json;\n\ntry {\n  let analysis = {};\n  try { analysis = JSON.parse(item.analysis || '{}'); } catch(e) { analysis = { overall_style: item.analysis }; }\n\n  let sceneDetails = '';\n  if (analysis.scenes && analysis.scenes.length > 0) {\n    sceneDetails = analysis.scenes.map((s, i) => {\n      return `Scene ${i+1} (${s.timestamp || ''}):\\n  Subject: ${s.subject_appearance || ''}\\n  Clothing: ${s.clothing || ''}\\n  Actions: ${s.actions || ''}\\n  Setting: ${s.setting || ''}\\n  Camera: ${s.camera || ''}\\n  Lighting: ${s.lighting || ''}\\n  Colors: ${s.colors || ''}\\n  Mood: ${s.mood || ''}`;\n    }).join('\\n\\n');\n  }\n\n  // We need 4 clips x 10s = 40 seconds\n  // Generate 4 sequential prompts\n  const userText = `VISUAL ANALYSIS OF ORIGINAL VIDEO:\\n\\n${sceneDetails || item.analysis || 'No analysis'}\\n\\nStyle: ${analysis.overall_style || 'unknown'}\\nConsistent: ${analysis.consistent_elements || 'unknown'}\\nNarrative: ${analysis.video_narrative || 'unknown'}\\n\\nAnalysis method: ${item.debug_method || 'unknown'}\\n\\n---\\n\\nWrite exactly 4 sequential video prompts that RECREATE this video\\'s visual content. Each prompt = one 10-second clip. The Seedance AI will EXTEND from the last frame of each clip into the next, so they must flow seamlessly.\\n\\nCRITICAL — MATCH THE ORIGINAL:\\n- Recreate the SAME environment, lighting, colors, mood, and actions\\n- Base prompts on the SCENE DESCRIPTIONS above (from watching the actual video)\\n- Same character throughout all 4 clips\\n\\nCONNECTED STORY: The 4 clips form ONE continuous narrative featuring both characters. The end of each clip must lead directly into the start of the next. Both characters must be visible and interacting in every clip.\\n\\nMATCH LOCATIONS FROM THE VIDEO: Recreate the exact settings from the original video. Do not invent locations. If the video stays in one place, vary the area or angle within it. Describe precisely: surfaces, textures, colors, props, lighting, atmosphere.\\n\\nSTRUCTURE (3-act across 4 clips):\\n- Clip 1: Opening — establish BOTH characters together in the video setting, mood and dynamic\\n- Clip 2: Interaction develops — follow the video location faithfully\\n- Clip 3: Main action between them intensifies\\n- Clip 4: The story resolves — final moment\\n\\nEXTENSION RULES (clips 2-4 extend from previous):\\n- Start each prompt describing WHERE the scene picks up from\\n- Describe the NEXT action that naturally follows\\n- Keep the same character, setting, lighting throughout\\n- Gradual progression, not sudden jumps\\n\\nSAFETY:\\n- No real people, celebrities, named individuals\\n- No brand names\\n- TWO CONSISTENT ASIAN CHARACTERS: There are exactly two characters across ALL 4 clips — one young East Asian WOMAN and one young East Asian MAN. Character A (woman): straight black hair (e.g. shoulder-length bob), warm light skin tone, almond-shaped eyes, specific outfit described in full. Character B (man): short straight dark hair, warm light skin tone, almond-shaped eyes, specific outfit described in full. Both described identically every clip — same hair, clothing, build.\\n\\nFORMAT:\\n- 180-220 words each, one flowing paragraph, no bullet points\\n- VIVID CHARACTER DESCRIPTIONS: Describe both characters fully every clip — hair, clothing, expression, posture. Identical across all 4 clips.\\n- FILL 10 SECONDS WITH MOVEMENT: Describe a sequence with a clear start, middle, and end. Never a single static pose.\\n- CHARACTER MOVEMENT: Both characters actively move — walking, turning, reaching, leaning, stepping back. Neither stands completely still.\\n- CAMERA MOVEMENT: Active camera motion every clip — push-in, pull-back reveal, lateral tracking, low-angle rise. Camera never static.\\n- DISTINCT CAMERA PER CLIP: One per clip, never repeated — slow push-in, wide pull-back, lateral tracking, low-angle rising.\\n- NO DIALOGUE OR TEXT: All emotion through movement and expression.\\n- NO timestamps, NO jargon, NO tag lists, NO negative words, NO audio cue mentions\\n- End each with: photorealistic, 4K ultra-HD, cinematic lighting, 24fps, subtle film grain, smooth motion blur\\n\\nReturn ONLY valid JSON:\\n{\\n  \"clip_1_prompt\": \"opening scene 180-220 words\",\\n  \"clip_2_prompt\": \"continues from clip 1\",\\n  \"clip_3_prompt\": \"middle development\",\\n  \"clip_4_prompt\": \"conclusion\",\\n  \"global_style\": \"consistent visual style\",\\n  \"character_description\": \"both characters described\"\\n}`;\n\n  const resp = await this.helpers.httpRequest({\n    method: 'POST',\n    url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + GEMINI_KEY,\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify({\n      contents: [{ role: 'user', parts: [{ text: userText }] }],\n      systemInstruction: { parts: [{ text: 'You write highly detailed cinematic AI video generation prompts telling ONE continuous story across 4 clips. Two characters: a young East Asian woman and a young East Asian man — described identically every clip. Both present and interacting in all 4 clips. Every clip fills 10 seconds with movement — start, middle, end — both characters moving, camera in motion. No dialogue, no text. Match the original video setting, lighting, colors, and mood. Output ONLY valid JSON.' }] },\n      generationConfig: { temperature: 0.3 }\n    }),\n    timeout: 120000\n  });\n\n  const r = typeof resp === 'string' ? JSON.parse(resp) : resp;\n  if (r.error) throw new Error('Gemini: ' + JSON.stringify(r.error));\n  let text = r.candidates?.[0]?.content?.parts?.[0]?.text || '';\n  text = text.replace(/[\\x00-\\x1F\\x7F]/g, ' ');\n  let parsed;\n  try { parsed = JSON.parse(text); } catch (e) { const m = text.match(/\\{[\\s\\S]*\\}/); try { parsed = m ? JSON.parse(m[0]) : null; } catch (e2) { parsed = null; } }\n  if (!parsed || !parsed.clip_1_prompt) throw new Error('Parse failed: ' + text.substring(0, 300));\n\n  const prompts = [\n    parsed.clip_1_prompt || '',\n    parsed.clip_2_prompt || '',\n    parsed.clip_3_prompt || '',\n    parsed.clip_4_prompt || ''\n  ];\n\n  return [{ json: {\n    source_url: item.source_url || '',\n    title: item.title || '',\n    aspect_ratio: item.aspect_ratio || '16:9',\n    source_type: item.source_type || '',\n    all_prompts: JSON.stringify(prompts),\n    current_clip: 0,\n    total_clips: 4,\n    clip_duration: 10,\n    last_video_url: '',\n    all_video_urls: '[]',\n    global_style: parsed.global_style || '',\n    character_description: parsed.character_description || '',\n    debug_method: item.debug_method || '',\n    debug_details: item.debug_details || '',\n    poll_count: 0\n  } }];\n} catch (err) {\n  return [{ json: {\n    source_url: item.source_url || '', title: item.title || '',\n    aspect_ratio: item.aspect_ratio || '16:9', source_type: item.source_type || '',\n    all_prompts: '[]', current_clip: 0, total_clips: 0, clip_duration: 10,\n    last_video_url: '', all_video_urls: '[]', global_style: '', character_description: '',\n    debug_method: 'PROMPT_ERROR', debug_details: err.message\n  } }];\n}"
       },
       "id": "node-gemini-prompts",
-      "name": "Gemini: Generate 5 Clip Prompts",
+      "name": "Gemini: Generate 4 Clip Prompts",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [960, 320]
+      "position": [
+        960,
+        320
+      ],
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 10000
     },
-
     {
       "parameters": {
         "jsCode": "const SEEDANCE_KEY = 'ark-c43d75c1-1b4f-4039-ade1-810ad5069409-bd5e1';\nconst SEEDANCE_URL = 'https://ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks';\nconst SEEDANCE_MODEL = 'dreamina-seedance-2-0-260128';\n\nconst item = $input.first().json;\nconst currentClip = Number(item.current_clip) || 0;\nconst allPrompts = JSON.parse(item.all_prompts || '[]');\nconst prompt = allPrompts[currentClip] || 'A cinematic scene, photorealistic, 4K, cinematic lighting';\nconst lastVideoUrl = item.last_video_url || '';\nconst clipDuration = item.clip_duration || 10;\n\n// Build content array: text prompt + optional video reference for extension\nconst content = [{ type: 'text', text: prompt }];\nif (lastVideoUrl) {\n  // This is the EXTEND feature: pass previous video URL so Seedance continues from last frame\n  content.push({ type: 'video_url', video_url: { url: lastVideoUrl } });\n}\n\nconst requestBody = {\n  model: SEEDANCE_MODEL,\n  content: content,\n  duration: clipDuration,\n  generate_audio: false,\n  watermark: false\n};\n\n// Submit the task\ntry {\n  const response = await this.helpers.httpRequest({\n    method: 'POST',\n    url: SEEDANCE_URL,\n    headers: {\n      'Content-Type': 'application/json',\n      'Authorization': 'Bearer ' + SEEDANCE_KEY\n    },\n    body: JSON.stringify(requestBody),\n    timeout: 60000\n  });\n\n  const resp = typeof response === 'string' ? JSON.parse(response) : response;\n  const taskId = resp.id || resp.task_id || '';\n\n  if (!taskId) {\n    throw new Error('No task ID returned: ' + JSON.stringify(resp).substring(0, 500));\n  }\n\n  return [{ json: {\n    task_id: taskId,\n    source_url: item.source_url || '',\n    title: item.title || '',\n    aspect_ratio: item.aspect_ratio || '16:9',\n    source_type: item.source_type || '',\n    all_prompts: item.all_prompts || '[]',\n    current_clip: currentClip,\n    total_clips: item.total_clips || 5,\n    clip_duration: clipDuration,\n    last_video_url: lastVideoUrl,\n    all_video_urls: item.all_video_urls || '[]',\n    global_style: item.global_style || '',\n    character_description: item.character_description || '',\n    current_prompt: prompt,\n    is_extend: lastVideoUrl ? 'yes' : 'no',\n    debug_method: item.debug_method || '',\n    debug_details: item.debug_details || '',\n    poll_count: 0\n  } }];\n} catch (err) {\n  return [{ json: {\n    task_id: '',\n    source_url: item.source_url || '',\n    title: item.title || '',\n    current_clip: currentClip,\n    total_clips: item.total_clips || 5,\n    all_video_urls: item.all_video_urls || '[]',\n    error: 'Seedance submit failed: ' + err.message,\n    status: 'submit_failed',\n    debug_method: item.debug_method || '',\n    debug_details: item.debug_details || ''\n  } }];\n}"
@@ -60,9 +91,14 @@
       "name": "Seedance: Submit Clip",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1200, 320]
+      "position": [
+        1200,
+        320
+      ],
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 10000
     },
-
     {
       "parameters": {
         "amount": 60,
@@ -72,10 +108,12 @@
       "name": "Wait 60s",
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
-      "position": [1440, 320],
+      "position": [
+        1440,
+        320
+      ],
       "webhookId": "seedance-poll-wait"
     },
-
     {
       "parameters": {
         "jsCode": "const SEEDANCE_KEY = 'ark-c43d75c1-1b4f-4039-ade1-810ad5069409-bd5e1';\nconst item = $input.first().json;\nconst taskId = item.task_id || '';\nconst pollCount = (Number(item.poll_count) || 0) + 1;\n\nif (!taskId) {\n  return [{ json: { ...item, status: 'no_task_id', poll_count: pollCount } }];\n}\n\ntry {\n  const response = await this.helpers.httpRequest({\n    method: 'GET',\n    url: 'https://ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks/' + taskId,\n    headers: { 'Authorization': 'Bearer ' + SEEDANCE_KEY },\n    timeout: 30000\n  });\n\n  const resp = typeof response === 'string' ? JSON.parse(response) : response;\n  const status = resp.status || 'unknown';\n\n  // Extract video URL if succeeded\n  let videoUrl = '';\n  if (status === 'succeeded') {\n    if (resp.content && typeof resp.content === 'object' && !Array.isArray(resp.content)) {\n      videoUrl = resp.content.video_url || resp.content.url || '';\n    }\n    if (!videoUrl && Array.isArray(resp.content)) {\n      for (const c of resp.content) { if (c.video_url) { videoUrl = c.video_url; break; } if (c.url) { videoUrl = c.url; break; } }\n    }\n    if (!videoUrl && resp.output) videoUrl = resp.output.video_url || resp.output.url || '';\n    if (!videoUrl && resp.video_url) videoUrl = resp.video_url;\n    if (!videoUrl) {\n      const jsonStr = JSON.stringify(resp);\n      const urlMatch = jsonStr.match(/\"(?:video_url|url|download_url|file_url)\":\"(https?:\\/\\/[^\"]+)\"/i);\n      if (urlMatch) videoUrl = urlMatch[1];\n    }\n  }\n\n  return [{ json: {\n    task_id: taskId,\n    task_status: status,\n    video_url: videoUrl,\n    source_url: item.source_url || '',\n    title: item.title || '',\n    aspect_ratio: item.aspect_ratio || '16:9',\n    source_type: item.source_type || '',\n    all_prompts: item.all_prompts || '[]',\n    current_clip: item.current_clip || 0,\n    total_clips: item.total_clips || 5,\n    clip_duration: item.clip_duration || 10,\n    last_video_url: item.last_video_url || '',\n    all_video_urls: item.all_video_urls || '[]',\n    global_style: item.global_style || '',\n    character_description: item.character_description || '',\n    current_prompt: item.current_prompt || '',\n    is_extend: item.is_extend || 'no',\n    debug_method: item.debug_method || '',\n    debug_details: item.debug_details || '',\n    poll_count: pollCount,\n    raw_status: JSON.stringify(resp).substring(0, 500)\n  } }];\n} catch (err) {\n  return [{ json: { ...item, task_status: 'poll_error', video_url: '', poll_count: pollCount, raw_status: err.message } }];\n}"
@@ -84,15 +122,33 @@
       "name": "Seedance: Poll Status",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1680, 320]
+      "position": [
+        1680,
+        320
+      ],
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 10000
     },
-
     {
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
           "conditions": [
-            { "id": "c1", "leftValue": "={{ $json.task_status }}", "rightValue": "succeeded", "operator": { "type": "string", "operation": "equals" } }
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.task_status }}",
+              "rightValue": "succeeded",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
           ],
           "combinator": "or"
         },
@@ -102,18 +158,57 @@
       "name": "Succeeded?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
-      "position": [1920, 320]
+      "position": [
+        1920,
+        320
+      ]
     },
-
     {
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
           "conditions": [
-            { "id": "c2", "leftValue": "={{ $json.task_status }}", "rightValue": "failed", "operator": { "type": "string", "operation": "equals" } },
-            { "id": "c2b", "leftValue": "={{ $json.task_status }}", "rightValue": "no_task_id", "operator": { "type": "string", "operation": "equals" } },
-            { "id": "c2c", "leftValue": "={{ $json.task_status }}", "rightValue": "poll_error", "operator": { "type": "string", "operation": "equals" } },
-            { "id": "c3", "leftValue": "={{ $json.poll_count }}", "rightValue": 15, "operator": { "type": "number", "operation": "gte" } }
+            {
+              "id": "c2",
+              "leftValue": "={{ $json.task_status }}",
+              "rightValue": "failed",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "c2b",
+              "leftValue": "={{ $json.task_status }}",
+              "rightValue": "no_task_id",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "c2c",
+              "leftValue": "={{ $json.task_status }}",
+              "rightValue": "poll_error",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "c3",
+              "leftValue": "={{ $json.poll_count }}",
+              "rightValue": 15,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
           ],
           "combinator": "or"
         },
@@ -123,9 +218,11 @@
       "name": "Failed or Timeout?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
-      "position": [2160, 520]
+      "position": [
+        2160,
+        520
+      ]
     },
-
     {
       "parameters": {
         "jsCode": "// Clip succeeded! Store the video URL and check if we need more clips\nconst item = $input.first().json;\nconst currentClip = Number(item.current_clip) || 0;\nconst totalClips = Number(item.total_clips) || 5;\nconst videoUrl = item.video_url || '';\n\nconst existingUrls = JSON.parse(item.all_video_urls || '[]');\nexistingUrls.push(videoUrl);\n\nconst nextClip = currentClip + 1;\nconst needsMore = nextClip < totalClips;\n\nreturn [{ json: {\n  source_url: item.source_url || '',\n  title: item.title || '',\n  aspect_ratio: item.aspect_ratio || '16:9',\n  source_type: item.source_type || '',\n  all_prompts: item.all_prompts || '[]',\n  current_clip: nextClip,\n  total_clips: totalClips,\n  clip_duration: item.clip_duration || 10,\n  last_video_url: videoUrl,\n  all_video_urls: JSON.stringify(existingUrls),\n  global_style: item.global_style || '',\n  character_description: item.character_description || '',\n  needs_more: needsMore,\n  debug_method: item.debug_method || '',\n  debug_details: item.debug_details || '',\n  clip_just_done: currentClip + 1,\n  poll_count: 0\n} }];"
@@ -134,15 +231,30 @@
       "name": "Store Result & Check More",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2160, 160]
+      "position": [
+        2160,
+        160
+      ]
     },
-
     {
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
           "conditions": [
-            { "id": "c4", "leftValue": "={{ $json.needs_more }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }
+            {
+              "id": "c4",
+              "leftValue": "={{ $json.needs_more }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
           ],
           "combinator": "and"
         },
@@ -152,36 +264,50 @@
       "name": "Need More Clips?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
-      "position": [2400, 160]
+      "position": [
+        2400,
+        160
+      ]
     },
-
     {
       "parameters": {
-        "jsCode": "const item = $input.first().json;\nconst allUrls = JSON.parse(item.all_video_urls || '[]');\n\nreturn [{ json: {\n  source_url: String(item.source_url || ''),\n  video_title: String(item.title || ''),\n  status: 'completed_' + allUrls.length + '_clips',\n  global_style: String(item.global_style || ''),\n  character_description: String(item.character_description || ''),\n  clip_1_url: String(allUrls[0] || ''),\n  clip_2_url: String(allUrls[1] || ''),\n  clip_3_url: String(allUrls[2] || ''),\n  clip_4_url: String(allUrls[3] || ''),\n  clip_5_url: String(allUrls[4] || ''),\n  all_video_urls: allUrls.join(' | '),\n  total_duration_estimate: allUrls.length * (item.clip_duration || 10) + 's',\n  debug_method: String(item.debug_method || ''),\n  debug_details: String(item.debug_details || ''),\n  completed_at: new Date().toISOString(),\n  error: ''\n} }];"
+        "jsCode": "const item = $input.first().json;\nconst allUrls = JSON.parse(item.all_video_urls || '[]');\n\nreturn [{ json: {\n  source_url: String(item.source_url || ''),\n  video_title: String(item.title || ''),\n  status: 'completed_' + allUrls.length + '_clips',\n  global_style: String(item.global_style || ''),\n  character_description: String(item.character_description || ''),\n  clip_1_url: String(allUrls[0] || ''),\n  clip_2_url: String(allUrls[1] || ''),\n  clip_3_url: String(allUrls[2] || ''),\n  clip_4_url: String(allUrls[3] || ''),\n  all_video_urls: allUrls.join(' | '),\n  total_duration_estimate: allUrls.length * (item.clip_duration || 10) + 's',\n  debug_method: String(item.debug_method || ''),\n  debug_details: String(item.debug_details || ''),\n  completed_at: new Date().toISOString(),\n  error: ''\n} }];"
       },
       "id": "node-prepare-final",
       "name": "Prepare Final Result",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2640, 260]
+      "position": [
+        2640,
+        260
+      ]
     },
-
     {
       "parameters": {
-        "jsCode": "const item = $input.first().json;\nconst allUrls = JSON.parse(item.all_video_urls || '[]');\n\nreturn [{ json: {\n  source_url: String(item.source_url || ''),\n  video_title: String(item.title || ''),\n  status: String(item.task_status === 'failed' ? 'failed_at_clip_' + ((item.current_clip || 0) + 1) : 'timeout_at_clip_' + ((item.current_clip || 0) + 1)),\n  global_style: String(item.global_style || ''),\n  character_description: String(item.character_description || ''),\n  clip_1_url: String(allUrls[0] || ''),\n  clip_2_url: String(allUrls[1] || ''),\n  clip_3_url: String(allUrls[2] || ''),\n  clip_4_url: String(allUrls[3] || ''),\n  clip_5_url: String(allUrls[4] || ''),\n  all_video_urls: allUrls.join(' | '),\n  total_duration_estimate: allUrls.length * (item.clip_duration || 10) + 's',\n  debug_method: String(item.debug_method || ''),\n  debug_details: String(item.debug_details || ''),\n  completed_at: new Date().toISOString(),\n  error: String(item.raw_status || 'Timeout or failed')\n} }];"
+        "jsCode": "const item = $input.first().json;\nconst allUrls = JSON.parse(item.all_video_urls || '[]');\n\nreturn [{ json: {\n  source_url: String(item.source_url || ''),\n  video_title: String(item.title || ''),\n  status: String(item.task_status === 'failed' ? 'failed_at_clip_' + ((item.current_clip || 0) + 1) : 'timeout_at_clip_' + ((item.current_clip || 0) + 1)),\n  global_style: String(item.global_style || ''),\n  character_description: String(item.character_description || ''),\n  clip_1_url: String(allUrls[0] || ''),\n  clip_2_url: String(allUrls[1] || ''),\n  clip_3_url: String(allUrls[2] || ''),\n  clip_4_url: String(allUrls[3] || ''),\n  all_video_urls: allUrls.join(' | '),\n  total_duration_estimate: allUrls.length * (item.clip_duration || 10) + 's',\n  debug_method: String(item.debug_method || ''),\n  debug_details: String(item.debug_details || ''),\n  completed_at: new Date().toISOString(),\n  error: String(item.raw_status || 'Timeout or failed')\n} }];"
       },
       "id": "node-prepare-error",
       "name": "Prepare Error Result",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2640, 520]
+      "position": [
+        2640,
+        520
+      ]
     },
-
     {
       "parameters": {
         "operation": "appendOrUpdate",
-        "documentId": { "__rl": true, "value": "1wIh6AcVKWvef4NANk_c5a9jRiZ5gxrnBSHKdDB1yfc0", "mode": "id" },
-        "sheetName": { "__rl": true, "value": "gid=0", "mode": "id" },
+        "documentId": {
+          "__rl": true,
+          "value": "1wIh6AcVKWvef4NANk_c5a9jRiZ5gxrnBSHKdDB1yfc0",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "id"
+        },
         "columns": {
           "mappingMode": "defineBelow",
           "value": {
@@ -194,30 +320,142 @@
             "clip_2_url": "={{ $json.clip_2_url }}",
             "clip_3_url": "={{ $json.clip_3_url }}",
             "clip_4_url": "={{ $json.clip_4_url }}",
-            "clip_5_url": "={{ $json.clip_5_url }}",
             "all_video_urls": "={{ $json.all_video_urls }}",
             "total_duration": "={{ $json.total_duration_estimate }}",
             "debug_method": "={{ $json.debug_method }}",
             "completed_at": "={{ $json.completed_at }}",
             "error": "={{ $json.error }}"
           },
-          "matchingColumns": ["source_url"],
+          "matchingColumns": [
+            "source_url"
+          ],
           "schema": [
-            { "id": "source_url", "displayName": "source_url", "required": false, "defaultMatch": true, "display": true, "type": "string", "canBeUsedToMatch": true },
-            { "id": "video_title", "displayName": "video_title", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
-            { "id": "status", "displayName": "status", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
-            { "id": "global_style", "displayName": "global_style", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
-            { "id": "character_description", "displayName": "character_description", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
-            { "id": "clip_1_url", "displayName": "clip_1_url", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
-            { "id": "clip_2_url", "displayName": "clip_2_url", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
-            { "id": "clip_3_url", "displayName": "clip_3_url", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
-            { "id": "clip_4_url", "displayName": "clip_4_url", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
-            { "id": "clip_5_url", "displayName": "clip_5_url", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
-            { "id": "all_video_urls", "displayName": "all_video_urls", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
-            { "id": "total_duration", "displayName": "total_duration", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
-            { "id": "debug_method", "displayName": "debug_method", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
-            { "id": "completed_at", "displayName": "completed_at", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false },
-            { "id": "error", "displayName": "error", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": false }
+            {
+              "id": "source_url",
+              "displayName": "source_url",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "video_title",
+              "displayName": "video_title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "global_style",
+              "displayName": "global_style",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "character_description",
+              "displayName": "character_description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "clip_1_url",
+              "displayName": "clip_1_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "clip_2_url",
+              "displayName": "clip_2_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "clip_3_url",
+              "displayName": "clip_3_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "clip_4_url",
+              "displayName": "clip_4_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "all_video_urls",
+              "displayName": "all_video_urls",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "total_duration",
+              "displayName": "total_duration",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "debug_method",
+              "displayName": "debug_method",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "completed_at",
+              "displayName": "completed_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "error",
+              "displayName": "error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
           ]
         },
         "options": {}
@@ -226,18 +464,36 @@
       "name": "Sheet: Write Final Result",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
-      "position": [2880, 380],
+      "position": [
+        2880,
+        380
+      ],
       "credentials": {
-        "googleSheetsOAuth2Api": { "id": "QMVQS07gdB5Lmx0f", "name": "Google Sheets account" }
+        "googleSheetsOAuth2Api": {
+          "id": "QMVQS07gdB5Lmx0f",
+          "name": "Google Sheets account"
+        }
       }
     },
-
     {
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
           "conditions": [
-            { "id": "c_submit", "leftValue": "={{ $json.task_id }}", "rightValue": "", "operator": { "type": "string", "operation": "notEquals" } }
+            {
+              "id": "c_submit",
+              "leftValue": "={{ $json.task_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
           ],
           "combinator": "and"
         },
@@ -247,77 +503,218 @@
       "name": "Submit OK?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
-      "position": [1320, 320]
+      "position": [
+        1320,
+        320
+      ]
     },
-
     {
       "parameters": {
-        "jsCode": "const item = $input.first().json;\nreturn [{ json: {\n  source_url: String(item.source_url || ''),\n  video_title: String(item.title || ''),\n  status: String(item.status || 'submit_failed'),\n  global_style: '',\n  character_description: '',\n  clip_1_url: '',\n  clip_2_url: '',\n  clip_3_url: '',\n  clip_4_url: '',\n  clip_5_url: '',\n  all_video_urls: '',\n  total_duration: '0s',\n  debug_method: String(item.debug_method || ''),\n  completed_at: new Date().toISOString(),\n  error: String(item.error || 'Seedance API submit failed - check API key and model activation')\n} }];"
+        "jsCode": "const item = $input.first().json;\nreturn [{ json: {\n  source_url: String(item.source_url || ''),\n  video_title: String(item.title || ''),\n  status: String(item.status || 'submit_failed'),\n  global_style: '',\n  character_description: '',\n  clip_1_url: '',\n  clip_2_url: '',\n  clip_3_url: '',\n  clip_4_url: '',\n  all_video_urls: '',\n  total_duration: '0s',\n  debug_method: String(item.debug_method || ''),\n  completed_at: new Date().toISOString(),\n  error: String(item.error || 'Seedance API submit failed - check API key and model activation')\n} }];"
       },
       "id": "node-submit-error",
       "name": "Prepare Submit Error",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1500, 520]
+      "position": [
+        1500,
+        520
+      ]
     }
   ],
   "connections": {
     "Trigger: New Video Link": {
-      "main": [[{ "node": "Fetch Video Data", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Fetch Video Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Fetch Video Data": {
-      "main": [[{ "node": "Gemini: Watch & Analyze Video", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Gemini: Watch & Analyze Video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Gemini: Watch & Analyze Video": {
-      "main": [[{ "node": "Gemini: Generate 5 Clip Prompts", "type": "main", "index": 0 }]]
-    },
-    "Gemini: Generate 5 Clip Prompts": {
-      "main": [[{ "node": "Seedance: Submit Clip", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Gemini: Generate 5 Clip Prompts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Seedance: Submit Clip": {
-      "main": [[{ "node": "Submit OK?", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Submit OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Submit OK?": {
       "main": [
-        [{ "node": "Wait 60s", "type": "main", "index": 0 }],
-        [{ "node": "Prepare Submit Error", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Wait 60s",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Submit Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Prepare Submit Error": {
-      "main": [[{ "node": "Sheet: Write Final Result", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Sheet: Write Final Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Wait 60s": {
-      "main": [[{ "node": "Seedance: Poll Status", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Seedance: Poll Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Seedance: Poll Status": {
-      "main": [[{ "node": "Succeeded?", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Succeeded?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Succeeded?": {
       "main": [
-        [{ "node": "Store Result & Check More", "type": "main", "index": 0 }],
-        [{ "node": "Failed or Timeout?", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Store Result & Check More",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failed or Timeout?",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Failed or Timeout?": {
       "main": [
-        [{ "node": "Prepare Error Result", "type": "main", "index": 0 }],
-        [{ "node": "Wait 60s", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Prepare Error Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait 60s",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Store Result & Check More": {
-      "main": [[{ "node": "Need More Clips?", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Need More Clips?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Need More Clips?": {
       "main": [
-        [{ "node": "Seedance: Submit Clip", "type": "main", "index": 0 }],
-        [{ "node": "Prepare Final Result", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Seedance: Submit Clip",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Final Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Prepare Final Result": {
-      "main": [[{ "node": "Sheet: Write Final Result", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Sheet: Write Final Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Prepare Error Result": {
-      "main": [[{ "node": "Sheet: Write Final Result", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Sheet: Write Final Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini: Generate 4 Clip Prompts": {
+      "main": [
+        [
+          {
+            "node": "Seedance: Submit Clip",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "active": false,
@@ -328,7 +725,19 @@
     "executionTimeout": 7200
   },
   "versionId": "12.0.0",
-  "meta": { "instanceId": "seedance-extend-45s" },
+  "meta": {
+    "instanceId": "seedance-extend-45s"
+  },
   "pinData": {},
-  "tags": [{ "name": "video-pipeline" }, { "name": "seedance" }, { "name": "extend" }]
+  "tags": [
+    {
+      "name": "video-pipeline"
+    },
+    {
+      "name": "seedance"
+    },
+    {
+      "name": "extend"
+    }
+  ]
 }

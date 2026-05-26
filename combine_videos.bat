@@ -12,9 +12,18 @@ setlocal enabledelayedexpansion
 
 set "FFMPEG=C:\Users\user\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.1-full_build\bin\ffmpeg.exe"
 set "VIDEO_DIR=%~dp0video"
+set "TEMP_DIR=%~dp0temp"
+set "TEMP_DIR=%~dp0temp"
+set "TEMP_DIR=%~dp0temp"
 set "OUTPUT_NAME=%~1"
 
 if "%OUTPUT_NAME%"=="" set "OUTPUT_NAME=combined_output"
+
+if not exist "%TEMP_DIR%" mkdir "%TEMP_DIR%"
+
+if not exist "%TEMP_DIR%" mkdir "%TEMP_DIR%"
+
+if not exist "%TEMP_DIR%" mkdir "%TEMP_DIR%"
 
 REM Create the file list
 echo Creating file list...
@@ -37,7 +46,7 @@ if %count%==0 (
 
 echo.
 echo Found %count% video files to combine.
-echo Output: %VIDEO_DIR%\%OUTPUT_NAME%.mp4
+echo Output: %TEMP_DIR%\%OUTPUT_NAME%.mp4
 echo.
 
 REM First, re-encode all videos to ensure same format
@@ -56,12 +65,12 @@ for %%f in ("%VIDEO_DIR%\*.mp4") do (
 
 echo.
 echo Step 2: Combining videos...
-"%FFMPEG%" -y -f concat -safe 0 -i "%VIDEO_DIR%\temp_list.txt" -c copy "%VIDEO_DIR%\%OUTPUT_NAME%.mp4" -loglevel warning
+"%FFMPEG%" -y -f concat -safe 0 -i "%VIDEO_DIR%\temp_list.txt" -c copy "%TEMP_DIR%\%OUTPUT_NAME%.mp4" -loglevel warning
 
 if %ERRORLEVEL%==0 (
     echo.
     echo SUCCESS! Combined video saved to:
-    echo   %VIDEO_DIR%\%OUTPUT_NAME%.mp4
+    echo   %TEMP_DIR%\%OUTPUT_NAME%.mp4
     echo.
     REM Clean up temp files
     for /L %%i in (1,1,%count%) do (
