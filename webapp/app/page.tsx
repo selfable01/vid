@@ -1,15 +1,42 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
+import { FFmpeg } from '@ffmpeg/ffmpeg';
+import { fetchFile, toBlobURL } from '@ffmpeg/util';
 
 const SLOTS = [1, 2, 3, 4];
 
 export default function CombinePage() {
   const [files, setFiles] = useState<(File | null)[]>([null, null, null, null]);
-  const [status, setStatus] = useState<'idle' | 'combining' | 'done' | 'error'>('idle');
+  const [status, setStatus] = useState<'idle' | 'loading' | 'combining' | 'done' | 'error'>('idle');
+  const [progress, setProgress] = useState('');
   const [error, setError] = useState('');
   const [downloadUrl, setDownloadUrl] = useState('');
   const inputRefs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)];
+  const ffmpegRef = useRef<FFmpeg | null>(null);
+  const [ffmpegReady, setFfmpegReady] = useState(false);
+
+  useEffect(() => {
+    async function loadFfmpeg() {
+      const ffmpeg = new FFmpeg();
+      ffmpeg.on('log', ({ message }) => console.log('[ffmpeg]', message));
+      ffmpeg.on('progress', ({ progress: p }) => {
+        setProgress(`處理中… ${Math.round(p * 100)}%`);
+      });
+      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+      await ffmpeg.load({
+        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+      });
+      ffmpegRef.current = ffmpeg;
+      setFfmpegReady(true);
+    }
+    loadFfmpeg().catch(e => {
+      console.error('ffmpeg load failed:', e);
+      setError('ffmpeg 載入失敗，請重新整理頁面');
+      setStatus('error');
+    });
+  }, []);
 
   function pickFile(i: number) {
     inputRefs[i].current?.click();
@@ -33,34 +60,65 @@ export default function CombinePage() {
     });
   }
 
-  const filled = files.filter(Boolean);
-  const canCombine = filled.length >= 2 && status !== 'combining';
+  const filled = files.filter(Boolean) as File[];
+  const canCombine = filled.length >= 2 && status !== 'combining' && status !== 'loading' && ffmpegReady;
 
   async function combine() {
-    if (!canCombine) return;
+    if (!canCombine || !ffmpegRef.current) return;
     setStatus('combining');
     setError('');
     setDownloadUrl('');
+    setProgress('正在載入影片檔案…');
 
-    const form = new FormData();
-    files.forEach((f, i) => {
-      if (f) form.append(`video${i + 1}`, f);
-    });
-    form.append('order', files.map((f, i) => f ? String(i + 1) : '').filter(Boolean).join(','));
+    const ffmpeg = ffmpegRef.current;
+    const activeFiles = files.map((f, i) => f ? { file: f, slot: i + 1 } : null).filter(Boolean) as { file: File; slot: number }[];
 
     try {
-      const res = await fetch('/api/combine', { method: 'POST', body: form });
-      if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        throw new Error(j.error ?? `Server error ${res.status}`);
+      // Write each file into ffmpeg virtual FS
+      const inputNames: string[] = [];
+      for (let i = 0; i < activeFiles.length; i++) {
+        const name = `clip${activeFiles[i].slot}.mp4`;
+        setProgress(`載入第 ${i + 1}/${activeFiles.length} 段影片…`);
+        await ffmpeg.writeFile(name, await fetchFile(activeFiles[i].file));
+        inputNames.push(name);
       }
-      const blob = await res.blob();
+
+      // Write concat list
+      const listContent = inputNames.map(n => `file '${n}'`).join('\n');
+      await ffmpeg.writeFile('list.txt', listContent);
+
+      setProgress('合併中，請稍候…');
+
+      // Run ffmpeg concat
+      await ffmpeg.exec([
+        '-f', 'concat',
+        '-safe', '0',
+        '-i', 'list.txt',
+        '-c', 'copy',
+        '-movflags', '+faststart',
+        'output.mp4',
+      ]);
+
+      // Read result
+      const data = await ffmpeg.readFile('output.mp4') as Uint8Array;
+      const blob = new Blob([data.buffer as ArrayBuffer], { type: 'video/mp4' });
       const url = URL.createObjectURL(blob);
       setDownloadUrl(url);
       setStatus('done');
+      setProgress('');
+
+      // Cleanup virtual FS
+      for (const name of inputNames) {
+        ffmpeg.deleteFile(name).catch(() => {});
+      }
+      ffmpeg.deleteFile('list.txt').catch(() => {});
+      ffmpeg.deleteFile('output.mp4').catch(() => {});
+
     } catch (e) {
+      console.error(e);
       setError(e instanceof Error ? e.message : String(e));
       setStatus('error');
+      setProgress('');
     }
   }
 
@@ -68,9 +126,12 @@ export default function CombinePage() {
     setFiles([null, null, null, null]);
     setStatus('idle');
     setError('');
+    setProgress('');
     if (downloadUrl) URL.revokeObjectURL(downloadUrl);
     setDownloadUrl('');
   }
+
+  const isWorking = status === 'combining' || status === 'loading';
 
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col items-center px-4 py-12">
@@ -80,8 +141,17 @@ export default function CombinePage() {
         <div className="text-center space-y-2">
           <h1 className="text-3xl font-bold tracking-tight">影片合併工具</h1>
           <p className="text-zinc-400 text-sm">
-            上傳最多 4 個 MP4 片段，系統將使用 ffmpeg 自動合併為一支完整影片。
+            上傳最多 4 個 MP4 片段，直接在瀏覽器中合併為一支完整影片。
           </p>
+          {!ffmpegReady && status !== 'error' && (
+            <p className="text-xs text-yellow-500 flex items-center justify-center gap-2">
+              <Spinner />
+              正在載入 ffmpeg，請稍候…
+            </p>
+          )}
+          {ffmpegReady && (
+            <p className="text-xs text-green-600">ffmpeg 已就緒</p>
+          )}
         </div>
 
         {/* Slots */}
@@ -94,6 +164,7 @@ export default function CombinePage() {
                 accept="video/mp4,video/*"
                 className="hidden"
                 onChange={e => onFileChange(i, e)}
+                disabled={isWorking}
               />
               {files[i] ? (
                 <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-4 space-y-2">
@@ -106,7 +177,8 @@ export default function CombinePage() {
                     </div>
                     <button
                       onClick={() => removeFile(i)}
-                      className="text-zinc-500 hover:text-red-400 text-xs shrink-0"
+                      disabled={isWorking}
+                      className="text-zinc-500 hover:text-red-400 text-xs shrink-0 disabled:opacity-40"
                     >
                       ✕
                     </button>
@@ -118,7 +190,8 @@ export default function CombinePage() {
               ) : (
                 <button
                   onClick={() => pickFile(i)}
-                  className="w-full h-full min-h-[100px] bg-zinc-900 border border-dashed border-zinc-700 rounded-xl flex flex-col items-center justify-center gap-2 hover:border-zinc-500 hover:bg-zinc-800 transition"
+                  disabled={isWorking}
+                  className="w-full h-full min-h-[100px] bg-zinc-900 border border-dashed border-zinc-700 rounded-xl flex flex-col items-center justify-center gap-2 hover:border-zinc-500 hover:bg-zinc-800 transition disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   <span className="bg-zinc-800 text-zinc-400 text-xs font-bold w-6 h-6 rounded-full flex items-center justify-center">
                     {slot}
@@ -130,9 +203,11 @@ export default function CombinePage() {
           ))}
         </div>
 
-        {/* Info */}
+        {/* Info / Progress */}
         <p className="text-xs text-zinc-600 text-center">
-          {filled.length === 0
+          {isWorking
+            ? progress
+            : filled.length === 0
             ? '請至少上傳 2 段影片才能合併'
             : `已選擇 ${filled.length} 段影片 — 將依照順序合併`}
         </p>
@@ -167,14 +242,14 @@ export default function CombinePage() {
         {/* Combine button */}
         {status !== 'done' && (
           <button
-            onClick={status === 'combining' ? undefined : combine}
+            onClick={isWorking ? undefined : combine}
             disabled={!canCombine}
             className="w-full bg-white text-zinc-950 font-semibold py-3 rounded-lg text-sm hover:bg-zinc-200 transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
           >
-            {status === 'combining' ? (
+            {isWorking ? (
               <>
                 <Spinner />
-                合併中，請稍候…
+                {progress || '合併中，請稍候…'}
               </>
             ) : (
               '合併影片'
