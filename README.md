@@ -1,6 +1,6 @@
 # AI 影片生成工作流程
 
-使用 n8n + Gemini 分析 YouTube 或 Instagram 影片，自動生成 4 段詳細的 Seedance 2.0 提示詞，再由你手動貼入 Seedance 生成影片，最後合併為完整作品。
+使用 n8n + Gemini 分析 YouTube 或 Instagram 影片，自動生成 4 段詳細的 Seedance 2.0 提示詞，再由你手動貼入 Seedance 生成影片，最後透過網站合併為完整作品。
 
 ---
 
@@ -10,6 +10,7 @@
 |------|------|
 | **n8n 工作流程** | [開啟 n8n](https://threezebra.app.n8n.cloud/workflow/v6q9VUy6kXGbGi2o?projectId=pQgjgsAaINoKvWYN) |
 | **Google 試算表** | [開啟試算表](https://docs.google.com/spreadsheets/d/1wIh6AcVKWvef4NANk_c5a9jRiZ5gxrnBSHKdDB1yfc0/edit?gid=0#gid=0) |
+| **影片合併網站** | [https://webapp-seven-silk.vercel.app](https://webapp-seven-silk.vercel.app) |
 
 ---
 
@@ -19,9 +20,8 @@
 vid-generator/
 ├── n8n_seedance_manual_4prompt_workflow.json  ← 主要工作流程（匯入 n8n 使用）
 ├── seedance2-workflow.js                      ← 工作流程原始碼（n8n SDK 版）
-├── combine_videos.bat                         ← 合併影片腳本
 ├── fetch_youtube_data.js                      ← YouTube 資料抓取輔助腳本
-├── webapp/                                    ← 網頁應用程式
+├── webapp/                                    ← 影片合併網站原始碼
 ├── video/                                     ← 放置下載的 MP4 片段
 └── temp/                                      ← 合併後的成品輸出位置
 ```
@@ -82,21 +82,12 @@ vid-generator/
 
 ### 步驟四：合併影片
 
-1. 將 4 段 MP4 檔案放入 `video/` 資料夾
-2. 重新命名確保按順序排列：
-   ```
-   01_clip1.mp4
-   02_clip2.mp4
-   03_clip3.mp4
-   04_clip4.mp4
-   ```
-3. 雙擊執行 `combine_videos.bat`，或在終端機輸入：
-   ```
-   combine_videos.bat 我的影片名稱
-   ```
-4. 合併完成的影片儲存於 `temp/` 資料夾
+1. 開啟 [影片合併網站](https://webapp-seven-silk.vercel.app)
+2. 依序上傳 4 段 MP4 檔案（點擊格子 1→2→3→4）
+3. 按下 **Combine Videos**
+4. 完成後點擊 **Download combined.mp4** 下載成品
 
-> **注意：** 腳本會自動建立 `temp/` 資料夾，無需手動建立。若未指定名稱，預設輸出為 `combined_output.mp4`。
+> **注意：** 最少上傳 2 段即可合併，不一定需要 4 段。
 
 ---
 
@@ -121,7 +112,7 @@ vid-generator/
 | [n8n](https://n8n.io) | 自動化工作流程平台 |
 | [Gemini API](https://aistudio.google.com/app/apikey) | 影片分析與提示詞生成 |
 | [Seedance 2.0](https://seedance.ai) | AI 影片生成（手動操作） |
-| [FFmpeg](https://ffmpeg.org) | 影片合併（已內建於 .bat 腳本） |
+| [影片合併網站](https://webapp-seven-silk.vercel.app) | 合併 4 段影片（免安裝，直接使用） |
 | Google Sheets | 輸入網址與儲存結果 |
 
 ---
@@ -133,5 +124,4 @@ vid-generator/
 | `403 Forbidden` | Gemini API 金鑰無效或過期 | 至 [Google AI Studio](https://aistudio.google.com/app/apikey) 重新產生金鑰並更新 n8n |
 | `503 Service Unavailable` | Gemini 伺服器暫時過載 | 工作流程會自動重試 4 次，每次間隔 10 秒 |
 | 提示詞欄位空白 | Gemini 回應解析失敗 | 檢查試算表 `error` 欄位的錯誤訊息 |
-| 影片合併失敗 | FFmpeg 路徑錯誤 | 確認 `combine_videos.bat` 第 13 行的 FFmpeg 路徑正確 |
 | 第 2–4 段角色不一致 | 未上傳前一段影片作為參考 | 確認每段都上傳了正確的參考影片 |
