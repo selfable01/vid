@@ -78,9 +78,9 @@ export default function CombinePage() {
 
         {/* Header */}
         <div className="text-center space-y-2">
-          <h1 className="text-3xl font-bold tracking-tight">Video Combiner</h1>
+          <h1 className="text-3xl font-bold tracking-tight">影片合併工具</h1>
           <p className="text-zinc-400 text-sm">
-            Upload up to 4 MP4 clips — they'll be stitched into one video using ffmpeg.
+            上傳最多 4 個 MP4 片段，系統將使用 ffmpeg 自動合併為一支完整影片。
           </p>
         </div>
 
@@ -123,7 +123,7 @@ export default function CombinePage() {
                   <span className="bg-zinc-800 text-zinc-400 text-xs font-bold w-6 h-6 rounded-full flex items-center justify-center">
                     {slot}
                   </span>
-                  <span className="text-xs text-zinc-500">Click to upload clip {slot}</span>
+                  <span className="text-xs text-zinc-500">點擊上傳第 {slot} 段影片</span>
                 </button>
               )}
             </div>
@@ -133,32 +133,32 @@ export default function CombinePage() {
         {/* Info */}
         <p className="text-xs text-zinc-600 text-center">
           {filled.length === 0
-            ? 'Upload at least 2 clips to combine'
-            : `${filled.length} clip${filled.length > 1 ? 's' : ''} selected — clips will be joined in slot order`}
+            ? '請至少上傳 2 段影片才能合併'
+            : `已選擇 ${filled.length} 段影片 — 將依照順序合併`}
         </p>
 
         {/* Error */}
         {status === 'error' && (
           <div className="bg-red-950 border border-red-800 rounded-lg px-4 py-3 text-sm text-red-300">
-            <strong>Error:</strong> {error}
-            <button onClick={reset} className="ml-4 underline text-red-400 hover:text-red-200">Try again</button>
+            <strong>錯誤：</strong> {error}
+            <button onClick={reset} className="ml-4 underline text-red-400 hover:text-red-200">重試</button>
           </div>
         )}
 
         {/* Done */}
         {status === 'done' && downloadUrl && (
           <div className="bg-green-950 border border-green-800 rounded-xl p-5 space-y-3 text-center">
-            <p className="text-green-300 font-semibold">Video combined successfully!</p>
+            <p className="text-green-300 font-semibold">影片合併成功！</p>
             <a
               href={downloadUrl}
               download="combined.mp4"
               className="inline-block bg-white text-zinc-950 font-semibold px-6 py-3 rounded-lg text-sm hover:bg-zinc-200 transition"
             >
-              Download combined.mp4
+              下載 combined.mp4
             </a>
             <div>
               <button onClick={reset} className="text-xs text-green-600 hover:text-green-400 underline mt-2">
-                Combine more videos
+                繼續合併其他影片
               </button>
             </div>
           </div>
@@ -174,10 +174,10 @@ export default function CombinePage() {
             {status === 'combining' ? (
               <>
                 <Spinner />
-                Combining videos…
+                合併中，請稍候…
               </>
             ) : (
-              'Combine Videos'
+              '合併影片'
             )}
           </button>
         )}
