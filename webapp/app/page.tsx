@@ -1,218 +1,185 @@
 'use client';
 
-import { useState } from 'react';
-import Link from 'next/link';
+import { useState, useRef } from 'react';
 
-type Step = 'idle' | 'extracting' | 'analyzing' | 'done' | 'error';
+const SLOTS = [1, 2, 3, 4];
 
-interface Segment {
-  segment: number;
-  timeRange: string;
-  keyAction: string;
-  prompt: string;
-}
-
-interface Result {
-  videoSummary: string;
-  style: string;
-  segments: Segment[];
-}
-
-export default function Home() {
-  const [url, setUrl] = useState('');
-  const [step, setStep] = useState<Step>('idle');
-  const [stepMsg, setStepMsg] = useState('');
-  const [result, setResult] = useState<Result | null>(null);
+export default function CombinePage() {
+  const [files, setFiles] = useState<(File | null)[]>([null, null, null, null]);
+  const [status, setStatus] = useState<'idle' | 'combining' | 'done' | 'error'>('idle');
   const [error, setError] = useState('');
-  const [copied, setCopied] = useState<number | null>(null);
+  const [downloadUrl, setDownloadUrl] = useState('');
+  const inputRefs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)];
 
-  const isRunning = step === 'extracting' || step === 'analyzing';
+  function pickFile(i: number) {
+    inputRefs[i].current?.click();
+  }
 
-  async function run() {
-    if (!url.trim() || isRunning) return;
+  function onFileChange(i: number, e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0] ?? null;
+    setFiles(prev => {
+      const next = [...prev];
+      next[i] = f;
+      return next;
+    });
+    e.target.value = '';
+  }
+
+  function removeFile(i: number) {
+    setFiles(prev => {
+      const next = [...prev];
+      next[i] = null;
+      return next;
+    });
+  }
+
+  const filled = files.filter(Boolean);
+  const canCombine = filled.length >= 2 && status !== 'combining';
+
+  async function combine() {
+    if (!canCombine) return;
+    setStatus('combining');
     setError('');
-    setResult(null);
+    setDownloadUrl('');
 
-    // Step 1: Extract frames
-    setStep('extracting');
-    setStepMsg('Downloading video and extracting frames…');
-
-    const framesRes = await fetch('/api/frames', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: url.trim() }),
+    const form = new FormData();
+    files.forEach((f, i) => {
+      if (f) form.append(`video${i + 1}`, f);
     });
-    const framesData = await framesRes.json();
+    form.append('order', files.map((f, i) => f ? String(i + 1) : '').filter(Boolean).join(','));
 
-    if (!framesRes.ok || framesData.error) {
-      setStep('error');
-      setError(framesData.error ?? 'Frame extraction failed');
-      return;
+    try {
+      const res = await fetch('/api/combine', { method: 'POST', body: form });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error ?? `Server error ${res.status}`);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      setDownloadUrl(url);
+      setStatus('done');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setStatus('error');
     }
-
-    const { frames, title, aspectRatio, durationSeconds, frameCount } = framesData;
-    setStepMsg(`Extracted ${frameCount} frames from "${title}" — analyzing with Gemini…`);
-
-    // Step 2: Analyze and generate Seedance prompts
-    setStep('analyzing');
-
-    const analyzeRes = await fetch('/api/analyze', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ frames, title, aspectRatio, durationSeconds }),
-    });
-    const analyzeData = await analyzeRes.json();
-
-    if (!analyzeRes.ok || analyzeData.error) {
-      setStep('error');
-      setError(analyzeData.error ?? 'Analysis failed');
-      return;
-    }
-
-    setResult(analyzeData as Result);
-    setStep('done');
-    setStepMsg('');
-  }
-
-  async function copyPrompt(text: string, idx: number) {
-    await navigator.clipboard.writeText(text);
-    setCopied(idx);
-    setTimeout(() => setCopied(null), 2000);
-  }
-
-  async function copyAll(segments: Segment[]) {
-    const text = segments.map(s =>
-      `=== Segment ${s.segment} (${s.timeRange}) ===\n${s.prompt}`
-    ).join('\n\n');
-    await navigator.clipboard.writeText(text);
-    setCopied(-1);
-    setTimeout(() => setCopied(null), 2000);
   }
 
   function reset() {
-    setStep('idle');
-    setResult(null);
+    setFiles([null, null, null, null]);
+    setStatus('idle');
     setError('');
-    setStepMsg('');
+    if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+    setDownloadUrl('');
   }
 
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col items-center px-4 py-12">
-      <div className="w-full max-w-3xl space-y-8">
+      <div className="w-full max-w-2xl space-y-8">
 
         {/* Header */}
         <div className="text-center space-y-2">
-          <div className="flex items-center justify-center gap-4 mb-4">
-            <Link href="/combine" className="text-xs text-zinc-500 hover:text-zinc-300 underline">
-              Combine Videos →
-            </Link>
-          </div>
-          <h1 className="text-3xl font-bold tracking-tight">Seedance Prompt Generator</h1>
+          <h1 className="text-3xl font-bold tracking-tight">Video Combiner</h1>
           <p className="text-zinc-400 text-sm">
-            Paste a YouTube or Instagram Reel URL. We'll analyze it frame-by-frame and generate
-            4 detailed Seedance prompts (4 × 15s = 60s of video).
+            Upload up to 4 MP4 clips — they'll be stitched into one video using ffmpeg.
           </p>
         </div>
 
-        {/* Input */}
-        <div className="flex gap-2">
-          <input
-            className="flex-1 bg-zinc-900 border border-zinc-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-zinc-400 placeholder:text-zinc-600 disabled:opacity-50"
-            placeholder="https://youtube.com/watch?v=... or https://instagram.com/reel/..."
-            value={url}
-            onChange={e => setUrl(e.target.value)}
-            disabled={isRunning}
-            onKeyDown={e => e.key === 'Enter' && run()}
-          />
-          <button
-            onClick={isRunning ? reset : run}
-            disabled={!isRunning && !url.trim()}
-            className="bg-white text-zinc-950 font-semibold px-6 py-3 rounded-lg text-sm hover:bg-zinc-200 transition disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
-          >
-            {isRunning ? 'Cancel' : 'Analyze'}
-          </button>
+        {/* Slots */}
+        <div className="grid grid-cols-2 gap-4">
+          {SLOTS.map((slot, i) => (
+            <div key={slot}>
+              <input
+                ref={inputRefs[i]}
+                type="file"
+                accept="video/mp4,video/*"
+                className="hidden"
+                onChange={e => onFileChange(i, e)}
+              />
+              {files[i] ? (
+                <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-4 space-y-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="bg-white text-zinc-950 text-xs font-bold w-6 h-6 rounded-full flex items-center justify-center shrink-0">
+                        {slot}
+                      </span>
+                      <span className="text-sm text-zinc-300 truncate">{files[i]!.name}</span>
+                    </div>
+                    <button
+                      onClick={() => removeFile(i)}
+                      className="text-zinc-500 hover:text-red-400 text-xs shrink-0"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <p className="text-xs text-zinc-500 pl-8">
+                    {(files[i]!.size / 1024 / 1024).toFixed(1)} MB
+                  </p>
+                </div>
+              ) : (
+                <button
+                  onClick={() => pickFile(i)}
+                  className="w-full h-full min-h-[100px] bg-zinc-900 border border-dashed border-zinc-700 rounded-xl flex flex-col items-center justify-center gap-2 hover:border-zinc-500 hover:bg-zinc-800 transition"
+                >
+                  <span className="bg-zinc-800 text-zinc-400 text-xs font-bold w-6 h-6 rounded-full flex items-center justify-center">
+                    {slot}
+                  </span>
+                  <span className="text-xs text-zinc-500">Click to upload clip {slot}</span>
+                </button>
+              )}
+            </div>
+          ))}
         </div>
 
-        {/* Loading */}
-        {isRunning && (
-          <div className="flex items-center gap-3 text-sm text-zinc-400">
-            <Spinner />
-            <span>{stepMsg}</span>
-          </div>
-        )}
+        {/* Info */}
+        <p className="text-xs text-zinc-600 text-center">
+          {filled.length === 0
+            ? 'Upload at least 2 clips to combine'
+            : `${filled.length} clip${filled.length > 1 ? 's' : ''} selected — clips will be joined in slot order`}
+        </p>
 
         {/* Error */}
-        {step === 'error' && (
+        {status === 'error' && (
           <div className="bg-red-950 border border-red-800 rounded-lg px-4 py-3 text-sm text-red-300">
             <strong>Error:</strong> {error}
             <button onClick={reset} className="ml-4 underline text-red-400 hover:text-red-200">Try again</button>
           </div>
         )}
 
-        {/* Results */}
-        {result && step === 'done' && (
-          <div className="space-y-6">
-
-            {/* Summary */}
-            <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-3">
-              <div className="flex items-center justify-between">
-                <h2 className="font-semibold text-sm text-zinc-300">Video Analysis</h2>
-                <button onClick={reset} className="text-xs text-zinc-500 hover:text-zinc-300 underline">
-                  Analyze another
-                </button>
-              </div>
-              <p className="text-sm text-zinc-300">{result.videoSummary}</p>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-zinc-500 uppercase tracking-wide">Style</span>
-                <span className="text-xs text-zinc-400 bg-zinc-800 px-2 py-0.5 rounded">{result.style}</span>
-              </div>
-            </div>
-
-            {/* Copy all button */}
-            <div className="flex justify-end">
-              <button
-                onClick={() => copyAll(result.segments)}
-                className="text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-4 py-2 rounded-lg transition"
-              >
-                {copied === -1 ? '✓ Copied all' : 'Copy all 4 prompts'}
+        {/* Done */}
+        {status === 'done' && downloadUrl && (
+          <div className="bg-green-950 border border-green-800 rounded-xl p-5 space-y-3 text-center">
+            <p className="text-green-300 font-semibold">Video combined successfully!</p>
+            <a
+              href={downloadUrl}
+              download="combined.mp4"
+              className="inline-block bg-white text-zinc-950 font-semibold px-6 py-3 rounded-lg text-sm hover:bg-zinc-200 transition"
+            >
+              Download combined.mp4
+            </a>
+            <div>
+              <button onClick={reset} className="text-xs text-green-600 hover:text-green-400 underline mt-2">
+                Combine more videos
               </button>
             </div>
-
-            {/* Segment cards */}
-            {result.segments.map((seg, i) => (
-              <div key={i} className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
-                {/* Card header */}
-                <div className="flex items-center justify-between px-5 py-3 border-b border-zinc-800">
-                  <div className="flex items-center gap-3">
-                    <span className="bg-white text-zinc-950 text-xs font-bold w-6 h-6 rounded-full flex items-center justify-center">
-                      {seg.segment}
-                    </span>
-                    <div>
-                      <span className="text-sm font-medium">Segment {seg.segment}</span>
-                      <span className="text-zinc-500 text-xs ml-2">{seg.timeRange}</span>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => copyPrompt(seg.prompt, i)}
-                    className="text-xs bg-zinc-800 hover:bg-zinc-700 px-3 py-1.5 rounded-lg transition text-zinc-300"
-                  >
-                    {copied === i ? '✓ Copied' : 'Copy'}
-                  </button>
-                </div>
-
-                {/* Key action */}
-                <div className="px-5 py-2 border-b border-zinc-800 bg-zinc-950">
-                  <span className="text-xs text-zinc-500 uppercase tracking-wide mr-2">Action</span>
-                  <span className="text-xs text-zinc-300">{seg.keyAction}</span>
-                </div>
-
-                {/* Prompt */}
-                <div className="px-5 py-4">
-                  <p className="text-sm text-zinc-300 leading-relaxed">{seg.prompt}</p>
-                </div>
-              </div>
-            ))}
           </div>
+        )}
+
+        {/* Combine button */}
+        {status !== 'done' && (
+          <button
+            onClick={status === 'combining' ? undefined : combine}
+            disabled={!canCombine}
+            className="w-full bg-white text-zinc-950 font-semibold py-3 rounded-lg text-sm hover:bg-zinc-200 transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+          >
+            {status === 'combining' ? (
+              <>
+                <Spinner />
+                Combining videos…
+              </>
+            ) : (
+              'Combine Videos'
+            )}
+          </button>
         )}
       </div>
     </main>
